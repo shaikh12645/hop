@@ -4,6 +4,7 @@ import { makeStyles } from '@material-ui/core/styles'
 import Token from 'src/models/Token'
 import Typography from '@material-ui/core/Typography'
 import logger from 'src/logger'
+import { commafy } from 'src/utils'
 
 const useStyles = makeStyles(() => ({
   root: {
@@ -19,14 +20,14 @@ const useStyles = makeStyles(() => ({
   sendButton: {}
 }))
 
-interface Party {
+interface TokenEntity {
   token: Token
   amount: string
 }
 
 interface Props {
-  source: Party
-  dest: Party
+  source: TokenEntity
+  dest: TokenEntity
   onConfirm: (confirmed: boolean) => void
 }
 
@@ -49,8 +50,8 @@ const Convert = (props: Props) => {
     <div className={styles.root}>
       <div className={styles.title}>
         <Typography variant="h5" color="textPrimary">
-          Convert {source.amount} {source.token.symbol} for {dest.amount}{' '}
-          {dest.token.symbol}
+          Convert {commafy(source.amount, 5)} {source.token.symbol} for{' '}
+          {commafy(dest.amount, 5)} {dest.token.symbol}
         </Typography>
       </div>
       <div className={styles.action}>

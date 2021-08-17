@@ -1,4 +1,5 @@
-import React, { FC, ChangeEvent, useState, useEffect, useCallback } from 'react'
+import React, { useMemo, FC, ChangeEvent } from 'react'
+import { BigNumber } from 'ethers'
 import { formatUnits } from 'ethers/lib/utils'
 import { makeStyles } from '@material-ui/core/styles'
 import Card from '@material-ui/core/Card'
@@ -6,14 +7,12 @@ import Box from '@material-ui/core/Box'
 import Grid from '@material-ui/core/Grid'
 import Typography from '@material-ui/core/Typography'
 import MenuItem from '@material-ui/core/MenuItem'
+import Skeleton from '@material-ui/lab/Skeleton'
+import { Token } from '@hop-protocol/sdk'
 import LargeTextField from 'src/components/LargeTextField'
 import FlatSelect from 'src/components/selects/FlatSelect'
 import Network from 'src/models/Network'
-import Token from 'src/models/Token'
-import { useApp } from 'src/contexts/AppContext'
-import useInterval from 'src/hooks/useInterval'
-import { commafy } from 'src/utils'
-import logger from 'src/logger'
+import { toTokenDisplay } from 'src/utils'
 
 const useStyles = makeStyles(theme => ({
   root: {
@@ -31,6 +30,10 @@ const useStyles = makeStyles(theme => ({
     flexDirection: 'row',
     alignItems: 'center'
   },
+  defaultLabel: {
+    height: '3.8rem',
+    marginLeft: '1.2rem'
+  },
   networkLabel: {
     display: 'flex',
     flexDirection: 'row',
@@ -46,14 +49,8 @@ const useStyles = makeStyles(theme => ({
   },
   networkIcon: {
     display: 'flex',
-    height: '2.6rem',
-    margin: '0.5rem'
-  },
-  greyCircle: {
-    margin: '0.5rem',
-    padding: '1.3rem',
-    borderRadius: '1.8rem',
-    backgroundColor: '#C4C4C4'
+    height: '2.2rem',
+    margin: '0.7rem'
   },
   balance: {
     display: 'flex',
@@ -72,61 +69,38 @@ const useStyles = makeStyles(theme => ({
 }))
 
 type Props = {
-  value: string
+  value?: string
   label: string
   token?: Token
   onChange?: (value: string) => void
   selectedNetwork?: Network
   networkOptions: Network[]
   onNetworkChange: (network?: Network) => void
-  onBalanceChange?: (balance: number) => void
+  balance?: BigNumber
+  loadingBalance?: boolean
+  loadingValue?: boolean
+  disableInput?: boolean
 }
 
 const AmountSelectorCard: FC<Props> = props => {
   const {
-    value,
+    value = '',
     label,
     token,
     onChange,
     selectedNetwork,
     networkOptions,
     onNetworkChange,
-    onBalanceChange
+    balance,
+    loadingBalance = false,
+    loadingValue = false,
+    disableInput = false
   } = props
   const styles = useStyles()
-  const { user } = useApp()
 
-  const [balance, setBalance] = useState('0.00')
-
-  useEffect(() => {
-    if (onBalanceChange) {
-      onBalanceChange(Number(balance))
-    }
+  const balanceLabel = useMemo(() => {
+    return toTokenDisplay(balance, token?.decimals)
   }, [balance])
-
-  const getBalance = useCallback(() => {
-    const _getBalance = async () => {
-      if (user && token && selectedNetwork) {
-        try {
-          const _balance = await user.getBalance(token, selectedNetwork)
-          setBalance(formatUnits(_balance.toString(), 18))
-        } catch (err) {
-          setBalance('')
-          throw err
-        }
-      }
-    }
-
-    _getBalance().catch(logger.error)
-  }, [user, token, selectedNetwork])
-
-  useEffect(() => {
-    getBalance()
-  }, [getBalance, user, token, selectedNetwork])
-
-  useInterval(() => {
-    getBalance()
-  }, 5e3)
 
   const handleInputChange = (event: ChangeEvent<HTMLInputElement>) => {
     const { value } = event.target
@@ -136,7 +110,11 @@ const AmountSelectorCard: FC<Props> = props => {
   }
   const handleMaxClick = () => {
     if (onChange) {
-      onChange(Number(balance).toFixed(2))
+      let max = ''
+      if (balance && token) {
+        max = formatUnits(balance, token.decimals)
+      }
+      onChange(max)
     }
   }
 
@@ -151,21 +129,23 @@ const AmountSelectorCard: FC<Props> = props => {
         <Typography variant="subtitle2" color="textSecondary">
           {label}
         </Typography>
-        {balance ? (
+        {loadingBalance ? (
+          <Skeleton variant="text" width="15.0rem"></Skeleton>
+        ) : balance ? (
           <div className={styles.balance}>
-            {Number(balance) > 0 ? (
+            {balance.gt(0) && !disableInput ? (
               <button className={styles.maxButton} onClick={handleMaxClick}>
                 MAX
               </button>
             ) : null}
             <Typography variant="subtitle2" color="textSecondary">
-              Balance: {commafy(balance)}
+              Balance: {balanceLabel}
             </Typography>
           </div>
         ) : null}
       </Box>
       <Grid container alignItems="center">
-        <Grid item xs={6}>
+        <Grid item xs={5}>
           <FlatSelect
             value={selectedNetwork?.slug || 'default'}
             onChange={event => {
@@ -176,8 +156,7 @@ const AmountSelectorCard: FC<Props> = props => {
             }}
           >
             <MenuItem value="default">
-              <Box display="flex" flexDirection="row" alignItems="center">
-                <div className={styles.greyCircle} />
+              <Box display="flex" flexDirection="row" alignItems="center" className={styles.defaultLabel}>
                 <Typography variant="subtitle2" className={styles.networkLabel}>
                   Select Network
                 </Typography>
@@ -204,12 +183,14 @@ const AmountSelectorCard: FC<Props> = props => {
             ))}
           </FlatSelect>
         </Grid>
-        <Grid item xs={6}>
+        <Grid item xs={7}>
           <LargeTextField
             value={value}
             onChange={handleInputChange}
             placeholder="0.0"
             units={token?.symbol}
+            disabled={disableInput}
+            loadingValue={loadingValue}
           />
         </Grid>
       </Grid>

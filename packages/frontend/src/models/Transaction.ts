@@ -1,9 +1,10 @@
 import { ethers } from 'ethers'
 import { EventEmitter } from 'events'
 import { L1_NETWORK } from 'src/constants'
-import { getRpcUrl } from 'src/utils'
-import { getBaseExplorerUrl } from 'src/utils'
-import Token from 'src/models/Token'
+import { getRpcUrl, getProvider, getBaseExplorerUrl } from 'src/utils'
+
+import { Token } from '@hop-protocol/sdk'
+import { network as defaultNetwork } from 'src/config'
 
 interface Config {
   networkName: string
@@ -12,6 +13,7 @@ interface Config {
   pending?: boolean
   timestamp?: number
   token?: Token
+  isCanonicalTransfer?: boolean
 }
 
 const standardNetworks = new Set([
@@ -26,6 +28,7 @@ class Transaction extends EventEmitter {
   readonly hash: string
   readonly networkName: string
   readonly destNetworkName: string | null = null
+  readonly isCanonicalTransfer: boolean = false
   readonly provider: ethers.providers.Provider
   token: Token | null = null
   pending: boolean
@@ -38,11 +41,12 @@ class Transaction extends EventEmitter {
     destNetworkName,
     pending = true,
     timestamp,
-    token
+    token,
+    isCanonicalTransfer
   }: Config) {
     super()
     this.hash = (hash || '').trim().toLowerCase()
-    this.networkName = (networkName || 'kovan').trim().toLowerCase()
+    this.networkName = (networkName || defaultNetwork).trim().toLowerCase()
     let rpcUrl = ''
     if (networkName.startsWith('arbitrum')) {
       rpcUrl = getRpcUrl('arbitrum')
@@ -50,8 +54,8 @@ class Transaction extends EventEmitter {
       rpcUrl = getRpcUrl('optimism')
     } else if (networkName.startsWith('xdai')) {
       rpcUrl = getRpcUrl('xdai')
-    } else if (networkName.startsWith('matc')) {
-      rpcUrl = getRpcUrl('matic')
+    } else if (networkName.startsWith('matic') || networkName.startsWith('polygon')) {
+      rpcUrl = getRpcUrl('polygon')
     } else {
       rpcUrl = getRpcUrl(L1_NETWORK)
     }
@@ -59,7 +63,7 @@ class Transaction extends EventEmitter {
       this.destNetworkName = destNetworkName
     }
 
-    this.provider = new ethers.providers.StaticJsonRpcProvider(rpcUrl)
+    this.provider = getProvider(rpcUrl)
     this.timestamp = timestamp || Date.now()
     if (token) {
       this.token = token
@@ -70,10 +74,14 @@ class Transaction extends EventEmitter {
       this.pending = false
       this.emit('pending', false, this)
     })
+    if (typeof isCanonicalTransfer === 'boolean') {
+      this.isCanonicalTransfer = isCanonicalTransfer
+    }
+    console.debug('transaction:', this.hash)
   }
 
   get explorerLink (): string {
-    if (standardNetworks.has(this.networkName)) {
+    if (this.networkName.startsWith('ethereum')) {
       return this._etherscanLink()
     } else if (this.networkName.startsWith('arbitrum')) {
       return this._arbitrumLink()
@@ -81,8 +89,8 @@ class Transaction extends EventEmitter {
       return this._optimismLink()
     } else if (this.networkName.startsWith('xdai')) {
       return this._xdaiLink()
-    } else if (this.networkName.startsWith('matic')) {
-      return this._maticLink()
+    } else if (this.networkName.startsWith('polygon')) {
+      return this._polygonLink()
     } else {
       return ''
     }
@@ -101,28 +109,28 @@ class Transaction extends EventEmitter {
   }
 
   private _etherscanLink () {
-    return `${getBaseExplorerUrl(this.networkName)}tx/${this.hash}`
+    return `${getBaseExplorerUrl(this.networkName)}/tx/${this.hash}`
   }
 
   private _arbitrumLink () {
-    return `${getBaseExplorerUrl('arbitrum')}tx/${this.hash}`
+    return `${getBaseExplorerUrl('arbitrum')}/tx/${this.hash}`
   }
 
   private _optimismLink () {
     try {
       const url = new URL(getBaseExplorerUrl('optimism'))
-      return `${url.origin}${url.pathname}tx/${this.hash}${url.search}`
+      return `${url.origin}${url.pathname}/tx/${this.hash}${url.search}`
     } catch (err) {
       return ''
     }
   }
 
   private _xdaiLink () {
-    return `${getBaseExplorerUrl('xdai')}tx/${this.hash}`
+    return `${getBaseExplorerUrl('xdai')}/tx/${this.hash}`
   }
 
-  private _maticLink () {
-    return ''
+  private _polygonLink () {
+    return `${getBaseExplorerUrl('polygon')}/tx/${this.hash}`
   }
 
   toObject () {
@@ -132,9 +140,10 @@ class Transaction extends EventEmitter {
       pending,
       timestamp,
       token,
-      destNetworkName
+      destNetworkName,
+      isCanonicalTransfer
     } = this
-    return { hash, networkName, pending, timestamp, token, destNetworkName }
+    return { hash, networkName, pending, timestamp, token, destNetworkName, isCanonicalTransfer }
   }
 
   static fromObject (obj: any) {
@@ -144,7 +153,8 @@ class Transaction extends EventEmitter {
       pending,
       timestamp,
       token,
-      destNetworkName
+      destNetworkName,
+      isCanonicalTransfer
     } = obj
     return new Transaction({
       hash,
@@ -152,7 +162,8 @@ class Transaction extends EventEmitter {
       pending,
       timestamp,
       token,
-      destNetworkName
+      destNetworkName,
+      isCanonicalTransfer
     })
   }
 }

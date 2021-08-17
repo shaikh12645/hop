@@ -5,6 +5,7 @@ import Token from 'src/models/Token'
 import Network from 'src/models/Network'
 import Typography from '@material-ui/core/Typography'
 import logger from 'src/logger'
+import { commafy } from 'src/utils'
 
 const useStyles = makeStyles(() => ({
   root: {
@@ -20,15 +21,15 @@ const useStyles = makeStyles(() => ({
   sendButton: {}
 }))
 
-interface Party {
+interface TokenEntity {
   token: Token
   network: Network
   amount: string
 }
 
 interface Props {
-  source: Party
-  dest: Partial<Party>
+  source: TokenEntity
+  dest: Partial<TokenEntity>
   onConfirm: (confirmed: boolean) => void
 }
 
@@ -51,8 +52,8 @@ const Send = (props: Props) => {
     <div className={styles.root}>
       <div className={styles.title}>
         <Typography variant="h5" color="textPrimary">
-          Send {source.amount} {source.token.symbol} from {source.network.name}{' '}
-          to {dest?.network?.name}
+          Send {commafy(source.amount, 5)} {source.token.symbol} from{' '}
+          {source.network.name} to {dest?.network?.name}
         </Typography>
       </div>
       <div className={styles.action}>

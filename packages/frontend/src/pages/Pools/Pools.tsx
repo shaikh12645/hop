@@ -1,16 +1,21 @@
 import React, { FC, ChangeEvent } from 'react'
+import { BigNumber } from 'ethers'
 import { makeStyles } from '@material-ui/core/styles'
 import Typography from '@material-ui/core/Typography'
 import Card from '@material-ui/core/Card'
+import MuiButton from '@material-ui/core/Button'
 import Box from '@material-ui/core/Box'
 import MenuItem from '@material-ui/core/MenuItem'
+import { useApp } from 'src/contexts/AppContext'
 import Alert from 'src/components/alert/Alert'
-import AmountSelectorCard from 'src/pages/Pools/AmountSelectorCard'
+import AmountSelectorCard from 'src/components/AmountSelectorCard'
 import RaisedSelect from 'src/components/selects/RaisedSelect'
 import SelectOption from 'src/components/selects/SelectOption'
 import { usePools } from 'src/pages/Pools/PoolsContext'
 import SendButton from 'src/pages/Pools/SendButton'
-import { commafy, normalizeNumberInput } from 'src/utils'
+import { commafy, normalizeNumberInput, toTokenDisplay } from 'src/utils'
+import TokenWrapper from './TokenWrapper'
+import DetailRow from 'src/components/DetailRow'
 
 const useStyles = makeStyles(theme => ({
   title: {
@@ -52,7 +57,7 @@ const useStyles = makeStyles(theme => ({
   },
   poolPositionBox: {
     width: '45.6rem',
-    marginBottom: '5.4rem',
+    marginBottom: '3.4rem',
     display: 'flex',
     flexDirection: 'column',
     [theme.breakpoints.down('xs')]: {
@@ -67,17 +72,35 @@ const useStyles = makeStyles(theme => ({
   poolPosition: {
     display: 'flex',
     justifyContent: 'space-between'
+  },
+  removeLiquidityButton: {
+    marginTop: '2rem',
+    fontSize: '1.5rem',
+    opacity: 0.5
+  },
+  tokenWrapper: {
+    marginBottom: '2rem'
+  },
+  details: {
+    marginBottom: theme.padding.thick,
+    width: '46.0rem',
+    [theme.breakpoints.down('xs')]: {
+      width: '90%'
+    }
   }
 }))
 
 const Pools: FC = () => {
   const styles = useStyles()
-  let {
+  const {
+    bridges,
+    selectedBridge,
+    setSelectedBridge
+  } = useApp()
+  const {
     networks,
-    tokens,
+    canonicalToken,
     hopToken,
-    selectedToken,
-    setSelectedToken,
     selectedNetwork,
     setSelectedNetwork,
     token0Amount,
@@ -92,17 +115,25 @@ const Pools: FC = () => {
     userPoolTokenPercentage,
     token0Deposited,
     token1Deposited,
-    setToken0Balance,
-    setToken1Balance,
+    canonicalBalance,
+    hopBalance,
+    loadingCanonicalBalance,
+    loadingHopBalance,
     error,
-    setError
+    setError,
+    removeLiquidity,
+    isNativeToken,
+    poolReserves,
+    fee,
+    apr,
+    priceImpact
   } = usePools()
 
-  const handleTokenSelect = (event: ChangeEvent<{ value: unknown }>) => {
+  const handleBridgeChange = (event: ChangeEvent<{ value: unknown }>) => {
     const tokenSymbol = event.target.value as string
-    const newSelectedToken = tokens.find(token => token.symbol === tokenSymbol)
-    if (newSelectedToken) {
-      setSelectedToken(newSelectedToken)
+    const bridge = bridges.find(bridge => bridge.getTokenSymbol() === tokenSymbol)
+    if (bridge) {
+      setSelectedBridge(bridge)
     }
   }
 
@@ -120,39 +151,37 @@ const Pools: FC = () => {
     const token0Value = normalizeNumberInput(value)
     if (!token0Value) {
       setToken0Amount('')
-      setToken1Amount('')
       return
     }
 
     setToken0Amount(token0Value)
-    if (token1Rate) {
-      const token1Value = Number(token0Value) * Number(token1Rate)
-      setToken1Amount(token1Value.toFixed(2))
-    }
   }
 
   const handleToken1Change = async (value: string) => {
     const token1Value = normalizeNumberInput(value)
     if (!token1Value) {
-      setToken0Amount('')
       setToken1Amount('')
       return
     }
 
     setToken1Amount(token1Value)
-    if (token1Rate) {
-      const token0Value = Number(token1Value) / Number(token1Rate)
-      setToken0Amount(token0Value.toFixed(2))
-    }
   }
 
-  const handleToken0BalanceChange = (balance: number) => {
-    setToken0Balance(balance)
+  const handleRemoveLiquidityClick = (event: any) => {
+    event.preventDefault()
+    removeLiquidity()
   }
 
-  const handleToken1BalanceChange = (balance: number) => {
-    setToken1Balance(balance)
-  }
+  const hasBalance = !!Number(userPoolBalance)
+  const canonicalTokenSymbol = canonicalToken?.symbol || ''
+  const hopTokenSymbol = hopToken?.symbol || ''
+
+  const reserve0Formatted = `${commafy(poolReserves?.[0], 0) || '-'} ${canonicalTokenSymbol}`
+  const reserve1Formatted = `${commafy(poolReserves?.[1], 0) || '-'} ${hopTokenSymbol}`
+  const feeFormatted = `${fee ? Number((fee * 100).toFixed(2)) : '-'}%`
+  const aprFormatted = `${apr ? Number((apr * 100).toFixed(2)) : '-'}%`
+  const priceImpactLabel = Number(priceImpact) > 0 ? 'Bonus' : 'Price Impact'
+  const priceImpactFormatted = priceImpact ? `${Number((priceImpact * 100).toFixed(4))}%` : ''
 
   return (
     <Box display="flex" flexDirection="column" alignItems="center">
@@ -163,15 +192,15 @@ const Pools: FC = () => {
       </Box>
       <Box display="flex" alignItems="center" className={styles.tokenSelector}>
         <RaisedSelect
-          value={selectedToken?.symbol}
-          onChange={handleTokenSelect}
+          value={selectedBridge?.getTokenSymbol()}
+          onChange={handleBridgeChange}
         >
-          {tokens.map(token => (
-            <MenuItem value={token.symbol} key={token.symbol}>
+          {bridges.map(bridge => (
+            <MenuItem value={bridge.getTokenSymbol()} key={bridge.getTokenSymbol()}>
               <SelectOption
-                value={token.symbol}
-                icon={token.imageUrl}
-                label={token.symbol}
+                value={bridge.getTokenSymbol()}
+                icon={bridge.getTokenImage()}
+                label={bridge.getTokenSymbol()}
               />
             </MenuItem>
           ))}
@@ -198,15 +227,20 @@ const Pools: FC = () => {
           ))}
         </RaisedSelect>
       </Box>
+      {isNativeToken &&
+        <Box display="flex" alignItems="center" className={styles.tokenWrapper}>
+          <TokenWrapper />
+        </Box>
+      }
       <Box display="flex" alignItems="center">
         <AmountSelectorCard
-          label="Input"
-          title={`${selectedNetwork?.name} ${selectedToken?.symbol}`}
-          token={selectedToken}
           value={token0Amount}
+          token={canonicalToken}
+          label="Input"
           onChange={handleToken0Change}
-          selectedNetwork={selectedNetwork}
-          onBalanceChange={handleToken0BalanceChange}
+          title={`${selectedNetwork?.name} ${canonicalTokenSymbol}`}
+          balance={canonicalBalance}
+          loadingBalance={loadingCanonicalBalance}
         />
       </Box>
       <Box display="flex" alignItems="center">
@@ -214,13 +248,13 @@ const Pools: FC = () => {
       </Box>
       <Box display="flex" alignItems="center">
         <AmountSelectorCard
-          label="Input"
-          title={`Hop ${selectedToken?.symbol}`}
-          token={hopToken}
           value={token1Amount}
+          token={hopToken}
+          label="Input"
           onChange={handleToken1Change}
-          selectedNetwork={selectedNetwork}
-          onBalanceChange={handleToken1BalanceChange}
+          title={hopToken?.name}
+          balance={hopBalance}
+          loadingBalance={loadingHopBalance}
         />
       </Box>
       <Box alignItems="center" className={styles.pricesBox}>
@@ -231,26 +265,26 @@ const Pools: FC = () => {
               color="textSecondary"
               component="div"
             >
-              {commafy(token0Price)}
+              {commafy(token0Price, 5)}
             </Typography>
             <Typography
               variant="subtitle2"
               color="textSecondary"
               component="div"
             >
-              {hopToken?.symbol} per {selectedToken?.symbol}
+              {hopTokenSymbol} per {canonicalTokenSymbol}
             </Typography>
           </Box>
           <Box alignItems="center" className={styles.priceBox}>
             <Typography variant="subtitle1" color="textSecondary">
-              {commafy(token1Price)}
+              {commafy(token1Price, 5)}
             </Typography>
             <Typography
               variant="subtitle2"
               color="textSecondary"
               component="div"
             >
-              {selectedToken?.symbol} per {hopToken?.symbol}
+              {canonicalTokenSymbol} per {hopTokenSymbol}
             </Typography>
           </Box>
           {poolSharePercentage && (
@@ -273,7 +307,14 @@ const Pools: FC = () => {
           )}
         </Card>
       </Box>
-      {userPoolBalance && (
+      <Box className={styles.details}>
+        <DetailRow
+          title={priceImpactLabel}
+          tooltip="Depositing underpooled assets will give you bonus LP tokens. Depositing overpooled assets will give you less LP tokens."
+          value={`${priceImpactFormatted}`}
+        />
+      </Box>
+      {hasBalance && (
         <Box alignItems="center" className={styles.poolPositionBox}>
           <Card className={styles.poolPositionCard}>
             <Box alignItems="center" className={styles.poolPosition}>
@@ -285,21 +326,21 @@ const Pools: FC = () => {
                 Your position
               </Typography>
             </Box>
-            {userPoolBalance && (
+            {hasBalance && (
               <Box alignItems="center" className={styles.poolPosition}>
                 <Typography
                   variant="subtitle1"
                   color="textSecondary"
                   component="div"
                 >
-                  {selectedToken?.symbol}/{hopToken?.symbol}
+                  {canonicalTokenSymbol}/{hopTokenSymbol}
                 </Typography>
                 <Typography
                   variant="subtitle1"
                   color="textSecondary"
                   component="div"
                 >
-                  {userPoolBalance}
+                  {commafy(userPoolBalance, 5)}
                 </Typography>
               </Box>
             )}
@@ -328,14 +369,14 @@ const Pools: FC = () => {
                   color="textSecondary"
                   component="div"
                 >
-                  {selectedToken?.symbol}:
+                  {canonicalTokenSymbol}:
                 </Typography>
                 <Typography
                   variant="subtitle2"
                   color="textSecondary"
                   component="div"
                 >
-                  {commafy(token0Deposited)}
+                  {commafy(token0Deposited, 5)}
                 </Typography>
               </Box>
             )}
@@ -346,22 +387,56 @@ const Pools: FC = () => {
                   color="textSecondary"
                   component="div"
                 >
-                  {hopToken?.symbol}:
+                  {hopTokenSymbol}:
                 </Typography>
                 <Typography
                   variant="subtitle2"
                   color="textSecondary"
                   component="div"
                 >
-                  {commafy(token1Deposited)}
+                  {commafy(token1Deposited, 5)}
                 </Typography>
               </Box>
             )}
           </Card>
         </Box>
       )}
+      <Box className={styles.details}>
+        <Box alignItems="center" className={styles.poolPosition}>
+          <Typography
+            variant="subtitle2"
+            color="textSecondary"
+            component="div"
+          >
+            Pool stats
+          </Typography>
+        </Box>
+        <DetailRow
+          title="APR"
+          tooltip="Annual Percentage Rate (APR) from earning fees"
+          value={`${aprFormatted}`}
+        />
+        <DetailRow
+          title="Reserves"
+          tooltip={`AMM pool reserve totals, consisting of total ${canonicalTokenSymbol} + ${hopTokenSymbol}`}
+          value={`${reserve0Formatted} / ${reserve1Formatted}`}
+        />
+        <DetailRow
+          title="Fee"
+          tooltip={`Each trade has a ${feeFormatted} fee that goes to liquidity providers`}
+          value={`${feeFormatted}`}
+        />
+      </Box>
       <Alert severity="error" onClose={() => setError(null)} text={error} />
       <SendButton />
+      {hasBalance && (
+        <MuiButton
+          className={styles.removeLiquidityButton}
+          onClick={handleRemoveLiquidityClick}
+        >
+          Remove Liquidity
+        </MuiButton>
+      )}
     </Box>
   )
 }

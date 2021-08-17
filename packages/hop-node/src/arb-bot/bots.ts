@@ -1,10 +1,12 @@
 import '../moduleAlias'
 import ArbBot from './ArbBot'
-import { wallets } from 'src/wallets'
-import { contracts } from 'src/contracts'
+import contracts from 'src/contracts'
+import wallets from 'src/wallets'
+import { Chain } from 'src/constants'
+import { config as globalConfig } from 'src/config'
 
-const tokenSymbols = Object.keys(contracts)
-const networks = ['arbitrum', 'optimism', 'xdai']
+const tokenSymbols = Object.keys(globalConfig.tokens)
+const networks = [Chain.Arbitrum, Chain.Optimism, Chain.xDai, Chain.Polygon]
 
 export type Config = {
   minThreshold: number
@@ -14,17 +16,15 @@ export type Config = {
 export default {
   start: (config: Config) => {
     const bots: ArbBot[] = []
-    for (let network of networks) {
-      for (let token of tokenSymbols) {
-        if (!contracts[token]) {
-          continue
-        }
-        if (!contracts[token][network]) {
+    for (const network of networks) {
+      for (const token of tokenSymbols) {
+        if (!contracts.has(token, network)) {
           continue
         }
 
-        const tokenContracts = contracts[token][network]
+        const tokenContracts = contracts.get(token, network)
         const bot = new ArbBot({
+          network,
           label: `${network}.${token}`,
           token0: {
             label: `${network}.hop-${token}`,
@@ -34,18 +34,14 @@ export default {
             label: `${network}.canonical-${token}`,
             contract: tokenContracts.l2CanonicalToken
           },
-          uniswap: {
-            router: {
-              contract: tokenContracts.uniswapRouter
-            },
-            factory: {
-              contract: tokenContracts.uniswapFactory
-            },
-            exchange: {
-              contract: tokenContracts.uniswapExchange
+          amm: {
+            saddleSwap: {
+              contract: tokenContracts.saddleSwap
             }
           },
-          wallet: wallets[network],
+          tokenDecimals: globalConfig.metadata.tokens[token]
+            .decimals,
+          wallet: wallets.get(network),
           minThreshold: config.minThreshold || 1.01,
           maxTradeAmount: config.maxTradeAmount || 100000
         })

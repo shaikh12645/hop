@@ -1,11 +1,11 @@
 import React, { useState, ChangeEvent } from 'react'
 import Button from 'src/components/buttons/Button'
 import { makeStyles } from '@material-ui/core/styles'
-import Token from 'src/models/Token'
 import Typography from '@material-ui/core/Typography'
 import FormControlLabel from '@material-ui/core/FormControlLabel'
 import Checkbox from '@material-ui/core/Checkbox'
 import logger from 'src/logger'
+import { commafy } from 'src/utils'
 
 const useStyles = makeStyles(() => ({
   root: {
@@ -16,6 +16,9 @@ const useStyles = makeStyles(() => ({
   },
   title: {
     marginBottom: '2rem'
+  },
+  tagline: {
+    marginTop: '1rem'
   },
   approveAll: {
     display: 'flex',
@@ -29,15 +32,17 @@ const useStyles = makeStyles(() => ({
 
 interface Props {
   amount: string
-  token: Token
+  tagline?: string
+  tokenSymbol: string
   onConfirm: (confirmed: boolean, params?: any) => void
 }
 
 const Approval = (props: Props) => {
-  const { amount, token, onConfirm } = props
+  const { amount, tokenSymbol, onConfirm, tagline } = props
   const styles = useStyles()
   const [sending, setSending] = useState<boolean>(false)
   const [approveAll, setApproveAll] = useState<boolean>(true)
+  const showApproveAll = !!amount
 
   const handleSubmit = async () => {
     try {
@@ -58,22 +63,28 @@ const Approval = (props: Props) => {
     <div className={styles.root}>
       <div className={styles.title}>
         <Typography variant="h5" color="textPrimary">
-          Approve {!approveAll ? amount : ''} {token.symbol}
+          Approve {commafy(!approveAll ? amount : '')} {tokenSymbol}
         </Typography>
+        {tagline ? <Typography variant="body1" color="textPrimary" className={styles.tagline}>
+            {tagline}
+          </Typography>
+        : null}
       </div>
-      <div className={styles.approveAll}>
-        <FormControlLabel
-          control={
-            <Checkbox
-              checked={approveAll}
-              onChange={handleApproveAll}
-              disabled={amount === 'ALL'}
-              color="primary"
-            />
-          }
-          label="Approve all"
-        />
-      </div>
+      {showApproveAll
+        ? <div className={styles.approveAll}>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={approveAll}
+                onChange={handleApproveAll}
+                disabled={amount === 'ALL'}
+                color="primary"
+              />
+            }
+            label="Approve all"
+          />
+        </div>
+      : null }
       <div className={styles.action}>
         <Button
           className={styles.sendButton}

@@ -1,312 +1,205 @@
 import '../moduleAlias'
-import { Contract } from 'ethers'
+import BaseWatcher from './classes/BaseWatcher'
+import L2Bridge from './classes/L2Bridge'
 import chalk from 'chalk'
+import { BigNumber, Contract, providers } from 'ethers'
+import { TX_RETRY_DELAY_MS } from 'src/constants'
 import { wait } from 'src/utils'
-import { throttle } from 'src/utils'
-import db from 'src/db'
-import MerkleTree from 'src/utils/MerkleTree'
-import BaseWatcher from './helpers/BaseWatcher'
-import L2Bridge from './helpers/L2Bridge'
 
 export interface Config {
-  l2BridgeContract: Contract
-  contracts: { [networkId: string]: Contract }
+  chainSlug: string
+  tokenSymbol: string
   label: string
   order?: () => number
+  minThresholdAmount?: number
+
+  isL1?: boolean
+  bridgeContract?: Contract
+  dryMode?: boolean
+  stateUpdateAddress?: string
 }
 
+const BONDER_ORDER_DELAY_MS = 60 * 1000
+
 class CommitTransfersWatcher extends BaseWatcher {
-  l2Bridge: L2Bridge
-  contracts: { [networkId: string]: Contract }
+  siblingWatchers: { [chainId: string]: CommitTransfersWatcher }
+  minThresholdAmount: BigNumber = BigNumber.from(0)
+  commitTxSentAt: { [chainId: number]: number } = {}
 
   constructor (config: Config) {
     super({
-      tag: 'commitTransferWatcher',
+      chainSlug: config.chainSlug,
+      tokenSymbol: config.tokenSymbol,
+      tag: 'CommitTransferWatcher',
       prefix: config.label,
       logColor: 'yellow',
-      order: config.order
+      order: config.order,
+      isL1: config.isL1,
+      bridgeContract: config.bridgeContract,
+      dryMode: config.dryMode,
+      stateUpdateAddress: config.stateUpdateAddress
     })
-    this.l2Bridge = new L2Bridge(config.l2BridgeContract)
-    this.contracts = config.contracts
+
+    if (config.minThresholdAmount) {
+      this.minThresholdAmount = this.bridge.parseUnits(
+        config.minThresholdAmount
+      )
+    }
+
+    // Commit watcher is less time sensitive than others
+    this.pollIntervalMs = 6 * 10 * 1000
   }
 
   async start () {
-    this.started = true
-    this.logger.debug(`starting L2 commitTransfers scheduler`)
-    try {
-      await Promise.all([this.syncUp(), this.watch()])
-    } catch (err) {
-      this.logger.error('watcher error:', err)
-    }
-  }
-
-  async stop () {
-    this.l2Bridge.removeAllListeners()
-    this.started = false
-    this.logger.setEnabled(false)
-  }
-
-  async syncUp () {
-    this.logger.debug('syncing up events')
-    const blockNumber = await this.l2Bridge.getBlockNumber()
-    const startBlockNumber = blockNumber - 1000
-    const transferSentEvents = await this.l2Bridge.getTransferSentEvents(
-      startBlockNumber,
-      blockNumber
-    )
-
-    for (let event of transferSentEvents) {
-      const {
-        transferId,
-        recipient,
-        amount,
-        transferNonce,
-        bonderFee,
-        index
-      } = event.args
-      await this.handleTransferSentEvent(
-        transferId,
-        recipient,
-        amount,
-        transferNonce,
-        bonderFee,
-        index,
-        event
-      )
-    }
-  }
-
-  async watch () {
-    this.l2Bridge
-      .on(this.l2Bridge.TransferSent, this.handleTransferSentEvent)
-      .on('error', err => {
-        this.logger.error('event watcher error:', err.message)
-      })
-
-    while (true) {
-      if (!this.started) return
-      try {
-        const chainIds = Object.keys(this.contracts)
-        for (let chainId of chainIds) {
-          //await this.getRecentTransferHashesForCommittedRoots()
-          const pendingTransfers = await this.l2Bridge.getPendingTransfers(
-            chainId
-          )
-          if (pendingTransfers.length > 0) {
-            await this.checkTransferSent(chainId)
-          }
-        }
-      } catch (err) {
-        this.logger.error('error checking:', err.message)
-      }
-      await wait(10 * 1000)
-    }
-  }
-
-  checkTransferSent = throttle(async (chainId: string) => {
-    if (!chainId) {
-      throw new Error('chainId is required')
-    }
-    const pendingAmount = await this.l2Bridge.getPendingAmountForChainId(
-      chainId
-    )
-    if (pendingAmount <= 0) {
-      return
-    }
-
-    const lastCommitTime = await this.l2Bridge.getLastCommitTimeForChainId(
-      chainId
-    )
-    const minimumForceCommitDelay = await this.l2Bridge.getMinimumForceCommitDelay()
-    const minForceCommitTime = lastCommitTime + minimumForceCommitDelay
-    const isBonder = await this.l2Bridge.isBonder()
-    const l2ChainId = await this.l2Bridge.getChainId()
-    this.logger.debug('chainId:', l2ChainId)
-    this.logger.debug('destinationChainId:', chainId)
-    this.logger.debug('lastCommitTime:', lastCommitTime)
-    this.logger.debug('minimumForceCommitDelay:', minimumForceCommitDelay)
-    this.logger.debug('minForceCommitTime:', minForceCommitTime)
-    this.logger.debug('isBonder:', isBonder)
-
-    if (minForceCommitTime >= Date.now() && !isBonder) {
-      this.logger.warn('only Bonder can commit before min delay')
-    }
-
-    const messengerAddress = await this.l2Bridge.l2BridgeWrapper.getMessengerAddress()
-    this.logger.debug('messenger address:', messengerAddress)
-
-    const pendingTransfers: string[] = await this.l2Bridge.getPendingTransfers(
-      chainId
-    )
-    if (!pendingTransfers.length) {
-      this.logger.warn('no pending transfers to commit')
-    }
-
-    this.logger.debug(chainId, 'onchain pendingTransfers', pendingTransfers)
-    const tree = new MerkleTree(pendingTransfers)
-    const transferRootHash = tree.getHexRoot()
     this.logger.debug(
-      chainId,
-      'calculated transferRootHash:',
-      chalk.bgMagenta.black(transferRootHash)
+      `minThresholdAmount: ${this.bridge.formatUnits(this.minThresholdAmount)}`
     )
-    await db.transferRoots.update(transferRootHash, {
-      transferRootHash,
-      transferHashes: pendingTransfers
-    })
+    await super.start()
+  }
 
-    const dbTransferRoot = await db.transferRoots.getByTransferRootHash(
-      transferRootHash
-    )
-    if (dbTransferRoot?.sentCommitTx || dbTransferRoot?.commited) {
-      this.logger.debug(
-        'sent?:',
-        !!dbTransferRoot.sentCommitTx,
-        'commited?:',
-        !!dbTransferRoot.commited
-      )
+  async pollHandler () {
+    if (this.isL1) {
       return
     }
 
-    await db.transferRoots.update(transferRootHash, {
-      sentCommitTx: true
+    await this.checkTransferSentFromDb()
+  }
+
+  async checkTransferSentFromDb () {
+    const dbTransfers = await this.db.transfers.getUncommittedTransfers({
+      sourceChainId: await this.bridge.getChainId()
     })
+    if (dbTransfers.length) {
+      this.logger.debug(
+        `checking ${dbTransfers.length} uncommitted transfers db items`
+      )
+    }
+    const destinationChainIds: number[] = []
+    for (const dbTransfer of dbTransfers) {
+      const { destinationChainId } = dbTransfer
+      if (!destinationChainIds.includes(destinationChainId)) {
+        destinationChainIds.push(destinationChainId)
+      }
+    }
+    for (const destinationChainId of destinationChainIds) {
+      await this.checkIfShouldCommit(destinationChainId)
+    }
+  }
 
-    const tx = await this.l2Bridge.commitTransfers(chainId)
-    tx?.wait()
-      .then(async (receipt: any) => {
-        if (receipt.status !== 1) {
-          await db.transferRoots.update(transferRootHash, {
-            sentCommitTx: false
-          })
-          throw new Error('status=0')
-        }
-        this.emit('commitTransfers', {
-          chainId,
-          transferRootHash,
-          transferHashes: pendingTransfers
-        })
-        await db.transferRoots.update(transferRootHash, {
-          commited: true
-        })
-      })
-      .catch(async (err: Error) => {
-        await db.transferRoots.update(transferRootHash, {
-          sentCommitTx: false
-        })
-
-        throw err
-      })
-    this.logger.info(
-      `L2 commitTransfers tx:`,
-      chalk.bgYellow.black.bold(tx.hash)
-    )
-  }, 15 * 1000)
-
-  handleTransferSentEvent = async (
-    transferHash: string,
-    recipient: string,
-    amount: string,
-    transferNonce: string,
-    bonderFee: string,
-    index: string,
-    meta: any
-  ) => {
+  async checkIfShouldCommit (destinationChainId: number) {
     try {
-      const dbTransferHash = await db.transfers.getByTransferHash(transferHash)
-      if (dbTransferHash?.sourceChainId) {
+      if (!destinationChainId) {
+        throw new Error('destination chain id is required')
+      }
+
+      // Define new object on first run after server restart
+      if (!this.commitTxSentAt[destinationChainId]) {
+        this.commitTxSentAt[destinationChainId] = 0
+      }
+      const timestampOk = this.commitTxSentAt[destinationChainId] + TX_RETRY_DELAY_MS < Date.now()
+      if (timestampOk) {
+        // This may happen either in the happy path case or if the transaction
+        // has been in the mempool for too long and we want to retry
+        this.commitTxSentAt[destinationChainId] = 0
+      } else {
+        this.logger.info(
+          `commit tx for chainId ${destinationChainId} is in mempool`
+        )
         return
       }
 
-      this.logger.debug(`received TransferSent event`)
-      this.logger.debug(`waiting`)
-      // TODO: batch
-      const { transactionHash } = meta
-      const { data } = await this.l2Bridge.getTransaction(transactionHash)
+      // We must check on chain because this may run when the DB is syncing and our DB state is incomplete
+      const l2Bridge = this.bridge as L2Bridge
+      const totalPendingAmount = await l2Bridge.getPendingAmountForChainId(
+        destinationChainId
+      )
+      const formattedPendingAmount = this.bridge.formatUnits(totalPendingAmount)
 
-      const { chainId } = await this.l2Bridge.decodeSendData(data)
-      const sourceChainId = await this.l2Bridge.getChainId()
-      await db.transfers.update(transferHash, {
-        transferHash,
-        chainId,
-        sourceChainId
-      })
+      if (totalPendingAmount.lte(this.minThresholdAmount)) {
+        const formattedThreshold = this.bridge.formatUnits(
+          this.minThresholdAmount
+        )
+        this.logger.warn(
+          `dest ${destinationChainId}: pending amt ${formattedPendingAmount} less than min of ${formattedThreshold}.`
+        )
+        return
+      }
+
+      this.logger.debug(
+        `total pending amount for chainId ${destinationChainId}: ${formattedPendingAmount}`
+      )
+
+      await this.handleStateSwitch()
+      if (this.isDryOrPauseMode) {
+        this.logger.warn(`dry: ${this.dryMode}, pause: ${this.pauseMode}. skipping commitTransfers`)
+        return
+      }
+
+      await this.waitTimeout(destinationChainId)
+      this.logger.debug(
+        `sending commitTransfers (destination chain ${destinationChainId}) tx`
+      )
+
+      this.commitTxSentAt[destinationChainId] = Date.now()
+      const tx = await l2Bridge.commitTransfers(destinationChainId)
+      tx?.wait()
+        .then(async (receipt: providers.TransactionReceipt) => {
+          if (receipt.status !== 1) {
+            this.commitTxSentAt[destinationChainId] = 0
+            throw new Error('status=0')
+          }
+          this.emit('commitTransfers', {
+            destinationChainId
+          })
+          this.commitTxSentAt[destinationChainId] = 0
+        })
+        .catch(async (err: Error) => {
+          this.commitTxSentAt[destinationChainId] = 0
+
+          throw err
+        })
+      const sourceChainId = await l2Bridge.getChainId()
+      this.logger.info(
+        `L2 (${sourceChainId}) commitTransfers (destination chain ${destinationChainId}) tx:`,
+        chalk.bgYellow.black.bold(tx.hash)
+      )
+      this.notifier.info(`L2 commitTransfers tx: ${tx.hash}`)
     } catch (err) {
       if (err.message !== 'cancelled') {
-        this.logger.error('commitTransfers tx error:', err.message)
+        throw err
       }
     }
   }
 
-  async getRecentTransferHashesForCommittedRoots () {
-    const blockNumber = await this.l2Bridge.getBlockNumber()
-    let start = blockNumber - 1000
-    const transferCommits = await this.l2Bridge.getTransfersCommitedEvents(
-      start,
-      blockNumber
-    )
-    if (!transferCommits.length) {
+  async waitTimeout (destinationChainId: number) {
+    await wait(2 * 1000)
+    if (!this.order()) {
       return
     }
-    const transferCommitsMap: any = {}
-    for (let i = 1; i < transferCommits.length; i++) {
-      let { topics, blockNumber, transactionHash } = transferCommits[i]
-      const { data } = await this.l2Bridge.getTransaction(transactionHash)
-      const {
-        destinationChainId: chainId
-      } = await this.l2Bridge.decodeCommitTransfersData(data)
-      if (!chainId) {
-        continue
+    this.logger.debug(
+      `waiting for commitTransfers event. destinationChainId: ${destinationChainId}`
+    )
+    let timeout = this.order() * BONDER_ORDER_DELAY_MS
+    while (timeout > 0) {
+      if (!this.started) {
+        return
       }
-      const transferRootHash = topics[1]
-      const prevBlockNumber =
-        i === 0 ? start : transferCommits[i - 1].blockNumber
-      if (!transferCommitsMap[chainId]) {
-        transferCommitsMap[chainId] = {}
+      const l2Bridge = this.bridge as L2Bridge
+      const doesPendingTransferExist: boolean = await l2Bridge.doPendingTransfersExist(
+        destinationChainId
+      )
+      if (!doesPendingTransferExist) {
+        break
       }
-      transferCommitsMap[chainId][transferRootHash] = {
-        transferRootHash,
-        transferHashes: [],
-        prevBlockNumber,
-        blockNumber
-      }
+      const delay = 2 * 1000
+      timeout -= delay
+      await wait(delay)
     }
-    for (let destChainId in transferCommitsMap) {
-      for (let transferRootHash in transferCommitsMap[destChainId]) {
-        let {
-          prevBlockNumber,
-          blockNumber,
-          transferHashes
-        } = transferCommitsMap[destChainId][transferRootHash]
-        const recentEvents = await this.l2Bridge.getTransferSentEvents(
-          prevBlockNumber,
-          blockNumber
-        )
-        for (let event of recentEvents) {
-          const { data } = await this.l2Bridge.getTransaction(
-            event.transactionHash
-          )
-
-          const { chainId } = await this.l2Bridge.decodeSendData(data)
-          if (chainId === destChainId) {
-            transferHashes.push(event.topics[1])
-          }
-        }
-        if (transferHashes.length) {
-          const tree = new MerkleTree(transferHashes)
-          if (tree.getHexRoot() === transferRootHash) {
-            db.transferRoots.update(transferRootHash, {
-              transferHashes: transferHashes,
-              commited: true
-            })
-          } else {
-            this.logger.warn(
-              'merkle hex root does not match commited transfer root'
-            )
-          }
-        }
-      }
+    if (timeout <= 0) {
+      return
     }
+    this.logger.debug('transfers already committed')
+    throw new Error('cancelled')
   }
 }
 

@@ -7,11 +7,10 @@ import VotePage from './pages/Vote/VotePage'
 import Pools from 'src/pages/Pools'
 import Faucet from 'src/pages/Faucet'
 import Earn from 'src/pages/Earn'
+import Stake from 'src/pages/Stake'
 import Convert from 'src/pages/Convert'
 import Stats from 'src/pages/Stats'
-import Demo from 'src/pages/Demo'
-
-import { IProposal } from 'src/config'
+import { isMainnet, IProposal } from 'src/config'
 
 type Props = {}
 
@@ -82,8 +81,11 @@ const mockProposals: IProposal[] = [
 const COMPONENT_NAME: FC<Props> = () => {
   return (
     <Switch>
-      <Route path="/(send|arbitrum|optimism|matic|xdai)/">
+      <Route path="/(send|arbitrum|optimism|polygon|xdai)/">
         <Send />
+      </Route>
+      <Route path="/convert" exact >
+        <Redirect to="/convert/amm" />
       </Route>
       <Route path="/convert">
         <Convert />
@@ -91,11 +93,16 @@ const COMPONENT_NAME: FC<Props> = () => {
       <Route path="/pool">
         <Pools />
       </Route>
-      <Route path="/faucet">
-        <Faucet />
-      </Route>
+      {!isMainnet ? (
+        <Route path="/faucet">
+          <Faucet />
+        </Route>
+      ) : null}
       <Route path="/earn">
         <Earn />
+      </Route>
+      <Route path="/stake">
+        <Stake />
       </Route>
       <Route path="/stats">
         <Stats />
@@ -118,9 +125,6 @@ const COMPONENT_NAME: FC<Props> = () => {
         <Vote proposals={mockProposals} />
       </Route>
       <Route path="/stake">Staking coming soon</Route>
-      <Route path="/demo">
-        <Demo />
-      </Route>
 
       <Route path="/components">
         <Components />

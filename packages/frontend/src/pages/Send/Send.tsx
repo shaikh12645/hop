@@ -1,39 +1,42 @@
-import React, {
-  FC,
-  useState,
-  useMemo,
-  useRef,
-  useEffect,
-  ChangeEvent
-} from 'react'
-import { useLocation } from 'react-router-dom'
+import React, { FC, useState, useMemo, useEffect, ChangeEvent } from 'react'
 import { makeStyles } from '@material-ui/core/styles'
 import Box from '@material-ui/core/Box'
 import Typography from '@material-ui/core/Typography'
 import MuiButton from '@material-ui/core/Button'
-import CircularProgress from '@material-ui/core/CircularProgress'
 import ArrowDownIcon from '@material-ui/icons/ArrowDownwardRounded'
+import MenuItem from '@material-ui/core/MenuItem'
+import { Token } from '@hop-protocol/sdk'
 import RaisedSelect from 'src/components/selects/RaisedSelect'
-import MenuItem, { MenuItemProps } from '@material-ui/core/MenuItem'
 import SelectOption from 'src/components/selects/SelectOption'
 import AmountSelectorCard from 'src/pages/Send/AmountSelectorCard'
-import SendButton from 'src/pages/Send/SendButton'
 import Transaction from 'src/models/Transaction'
 import Alert from 'src/components/alert/Alert'
-import TxStatus from 'src/components/txStatus'
-import Modal from 'src/components/modal'
-import { Contract, BigNumber } from 'ethers'
+import TxStatusModal from 'src/components/txStatus/TxStatusModal'
+import DetailRow from 'src/components/DetailRow'
+import { BigNumber, ethers } from 'ethers'
 import { parseUnits, formatUnits } from 'ethers/lib/utils'
-import Token from 'src/models/Token'
 import Network from 'src/models/Network'
 import { useWeb3Context } from 'src/contexts/Web3Context'
 import { useApp } from 'src/contexts/AppContext'
-import { UINT256, L1_NETWORK } from 'src/constants'
-import uniswapV2PairArtifact from 'src/abi/UniswapV2Pair.json'
 import logger from 'src/logger'
-import { commafy, intersection, normalizeNumberInput } from 'src/utils'
+import { commafy, normalizeNumberInput, toTokenDisplay } from 'src/utils'
+import SendButton from 'src/pages/Send/SendButton'
+import useAvailableLiquidity from 'src/pages/Send/useAvailableLiquidity'
+import useBalance from 'src/hooks/useBalance'
+import useSendData from 'src/pages/Send/useSendData'
+import useNeedsTokenForFee from 'src/hooks/useNeedsTokenForFee'
+import useQueryParams from 'src/hooks/useQueryParams'
+import AmmDetails from 'src/components/AmmDetails'
+import useApprove from 'src/hooks/useApprove'
+import { reactAppNetwork } from 'src/config'
 
 const useStyles = makeStyles(theme => ({
+  header: {
+    display: 'flex',
+    justifyContent: 'center',
+    width: '46.0rem',
+    position: 'relative'
+  },
   sendSelect: {
     marginBottom: '4.2rem'
   },
@@ -50,13 +53,19 @@ const useStyles = makeStyles(theme => ({
     minWidth: 0,
     margin: '1.0rem'
   },
-  detailRow: {
+  details: {
     marginTop: '4.2rem',
     marginBottom: '5.4rem',
     width: '46.0rem',
     [theme.breakpoints.down('xs')]: {
       width: '90%'
     }
+  },
+  detailRow: {},
+  detailLabel: {
+    display: 'flex',
+    justifyContent: 'flex-start',
+    alignItems: 'center'
   },
   txStatusInfo: {
     flexDirection: 'column',
@@ -65,360 +74,346 @@ const useStyles = makeStyles(theme => ({
   },
   txStatusCloseButton: {
     marginTop: '1rem'
+  },
+  semiBold: {
+    fontWeight: 600
+  },
+  extraBold: {
+    fontWeight: 800
+  },
+  l1FeeAndAmount: {
+    marginTop: '2.4rem'
+  },
+  ammDetails: {
+    padding: theme.padding.extraLight,
+    width: '32.0rem'
   }
 }))
 
 const Send: FC = () => {
   const styles = useStyles()
-  const { pathname } = useLocation()
-  let { user, tokens, networks, contracts, txConfirm, txHistory } = useApp()
+  const {
+    networks,
+    txConfirm,
+    txHistory,
+    sdk,
+    bridges,
+    selectedBridge,
+    setSelectedBridge,
+    settings
+  } = useApp()
+  const {
+    slippageTolerance,
+    deadline
+  } = settings
   const {
     provider,
     walletConnected,
     checkConnectedNetworkId,
-    getWriteContract
+    address
   } = useWeb3Context()
+  const { queryParams, updateQueryParams } = useQueryParams()
 
-  const networkSlugs = networks.map(network => network.slug)
-  const pathNetwork = pathname.replace(/^\//, '')
-  if (networkSlugs.includes(pathNetwork)) {
-    // show only tokens supported by network
-    tokens = tokens.filter(token => {
-      return token.supportedNetworks.includes(pathNetwork)
-    })
-    networks = networks.filter(network => {
-      return network.isLayer1 || network.slug == pathNetwork
-    })
-  } else {
-    // show tokens supported by all networks
-    tokens = tokens.filter(token => {
-      return (
-        intersection([networkSlugs, token.supportedNetworks]).length ===
-        networkSlugs.length
-      )
-    })
-  }
-  const [l2Bridge, setL2Bridge] = useState<Contract | undefined>()
-  const [uniswapRouter, setUniswapRouter] = useState<Contract | undefined>()
-  const [selectedToken, setSelectedToken] = useState<Token>(tokens[0])
-  const [fromNetwork, setFromNetwork] = useState<Network>()
-  const [toNetwork, setToNetwork] = useState<Network>()
-  const [fromTokenAmount, setFromTokenAmount] = useState<string>('')
-  const [toTokenAmount, setToTokenAmount] = useState<string>('')
-  const [isFromLastChanged, setIsFromLastChanged] = useState<boolean>(true)
-  const [sending, setSending] = useState<boolean>(false)
-  const [fetchingRate, setFetchingRate] = useState<boolean>(false)
-  const [exchangeRate, setExchangeRate] = useState<number>(0)
-  const [fromBalance, setFromBalance] = useState<number>(0)
-  const [toBalance, setToBalance] = useState<number>(0)
-  const [error, setError] = useState<string | null | undefined>(null)
-  const [info, setInfo] = useState<string | null | undefined>(null)
-  const [tx, setTx] = useState<Transaction | null>(null)
-  const l1Bridge = contracts?.tokens[selectedToken?.symbol][L1_NETWORK].l1Bridge
-  const debouncer = useRef<number>(0)
+  const [fromNetwork, _setFromNetwork] = useState<Network>()
+  const [toNetwork, _setToNetwork] = useState<Network>()
 
   useEffect(() => {
-    if (!tokens.includes(selectedToken)) {
-      setSelectedToken(tokens[0])
-    }
-  }, [networks])
-  const calcAmount = async (
-    amount: string,
-    isAmountIn: boolean
-  ): Promise<number> => {
-    if (!fromNetwork) return 0
-    if (!toNetwork) return 0
-    if (!amount) return 0
-
-    const amountBN = parseUnits(amount, 18)
-
-    const decimals = 18
-    // L1 -> L2 or L2 -> L1
-    if (fromNetwork?.isLayer1 || toNetwork?.isLayer1) {
-      const _amount = await _calcAmount(
-        amountBN,
-        isAmountIn,
-        fromNetwork,
-        toNetwork
-      )
-      return Number(formatUnits(_amount.toString(), decimals))
-    }
-
-    // L2 -> L2
-    const layer1Network = networks.find(network => network.isLayer1) as Network
-    const amountOut1 = await _calcAmount(
-      amountBN,
-      true,
-      fromNetwork,
-      layer1Network
+    const _fromNetwork = networks.find(network =>
+      network.slug === queryParams.sourceNetwork
     )
-    const amountOut2 = await _calcAmount(
-      amountOut1,
-      true,
-      layer1Network,
-      toNetwork
+    _setFromNetwork(_fromNetwork)
+
+    const _toNetwork = networks.find(network =>
+      network.slug === queryParams.destNetwork
     )
+    _setToNetwork(_toNetwork)
+  }, [queryParams, networks])
 
-    return Number(formatUnits(amountOut2.toString(), decimals))
+  const setFromNetwork = (network: Network | undefined) => {
+    updateQueryParams({
+      sourceNetwork: network?.slug ?? ''
+    })
+
+    _setFromNetwork(network)
   }
 
-  const _calcAmount = async (
-    amount: BigNumber,
-    isAmountIn: boolean,
-    _fromNetwork: Network,
-    _toNetwork: Network
-  ): Promise<BigNumber> => {
-    let path
-    let uniswapRouter
-    if (_fromNetwork.isLayer1) {
-      if (!_toNetwork) {
-        return BigNumber.from('0')
-      }
-      let l2CanonicalTokenAddress =
-        contracts?.tokens[selectedToken.symbol][_toNetwork.slug]
-          .l2CanonicalToken?.address
-      let l2HopBridgeTokenAddress =
-        contracts?.tokens[selectedToken.symbol][_toNetwork.slug]
-          .l2HopBridgeToken?.address
-      path = [l2HopBridgeTokenAddress, l2CanonicalTokenAddress]
-      uniswapRouter =
-        contracts?.tokens[selectedToken.symbol][_toNetwork.slug].uniswapRouter
-    } else {
-      if (!_fromNetwork) {
-        return BigNumber.from('0')
-      }
-      let l2CanonicalTokenAddress =
-        contracts?.tokens[selectedToken.symbol][_fromNetwork.slug]
-          .l2CanonicalToken?.address
-      let l2HopBridgeTokenAddress =
-        contracts?.tokens[selectedToken.symbol][_fromNetwork.slug]
-          .l2HopBridgeToken?.address
-      path = [l2CanonicalTokenAddress, l2HopBridgeTokenAddress]
-      uniswapRouter =
-        contracts?.tokens[selectedToken.symbol][_fromNetwork.slug].uniswapRouter
-    }
-    if (!path) {
-      return BigNumber.from('0')
-    }
-    if (isAmountIn) {
-      const amountsOut = await uniswapRouter?.getAmountsOut(amount, path)
-      return amountsOut[1]
-    } else {
-      const amountsIn = await uniswapRouter?.getAmountsIn(amount, path)
-      return amountsIn[0]
-    }
+  const setToNetwork = (network: Network | undefined) => {
+    updateQueryParams({
+      destNetwork: network?.slug ?? ''
+    })
+
+    _setToNetwork(network)
   }
 
-  const updateAmountOut = async (amountIn: string) => {
+  const [fromTokenAmount, setFromTokenAmount] = useState<string>('')
+  const [toTokenAmount, setToTokenAmount] = useState<string>('')
+  const [sending, setSending] = useState<boolean>(false)
+  const [feeDisplay, setFeeDisplay] = useState<string>()
+  const [amountOutMinDisplay, setAmountOutMinDisplay] = useState<string>()
+  const [warning, setWarning] = useState<string | null | undefined>(null)
+  const [error, setError] = useState<string | null | undefined>(null)
+  const [noLiquidityWarning, setNoLiquidityWarning] = useState<string | null | undefined>(null)
+  const [needsNativeTokenWarning, setNeedsNativeTokenWarning] = useState<string | null | undefined>(null)
+  const [minimumSendWarning, setMinimumSendWarning] = useState<string | null | undefined>(null)
+  const [info, setInfo] = useState<string | null | undefined>(null)
+  const [tx, setTx] = useState<Transaction | null>(null)
+  const [isLiquidityAvailable, setIsLiquidityAvailable] = useState<boolean>(
+    true
+  )
+
+  const sourceToken = useMemo(() => {
+    if (!fromNetwork || !selectedBridge) return
+    return selectedBridge.getCanonicalToken(fromNetwork?.slug)
+  }, [selectedBridge, fromNetwork])
+  const destToken = useMemo(() => {
+    if (!toNetwork || !selectedBridge) return
+    return selectedBridge.getCanonicalToken(toNetwork?.slug)
+  }, [selectedBridge, toNetwork])
+  const placeholderToken = useMemo(() => {
+    if (!selectedBridge) return
+    return selectedBridge.getL1Token()
+  }, [selectedBridge])
+
+  const { balance: fromBalance, loading: loadingFromBalance } = useBalance(
+    sourceToken,
+    fromNetwork,
+    address,
+  )
+  const { balance: toBalance, loading: loadingToBalance } = useBalance(
+    destToken,
+    toNetwork,
+    address,
+  )
+
+  const amountToBN = (token: Token | undefined, amount: string): BigNumber | undefined => {
+    if (!token) return
+    let val
     try {
-      if (!amountIn || !toNetwork) return
-      const ctx = ++debouncer.current
-      const amountOut = await calcAmount(amountIn, true)
-      const rate = amountOut / Number(amountIn)
-      if (ctx !== debouncer.current) return
-      setToTokenAmount((Number(amountIn) * rate).toFixed(2))
-      setExchangeRate(rate)
+      const sanitizedAmount = amount.replace(/,/g, '')
+      val = parseUnits(sanitizedAmount, token.decimals)
     } catch (err) {
-      logger.error(err)
+      // noop
     }
+    return val
   }
 
-  const updateAmountIn = async (amountOut: string) => {
-    try {
-      if (!amountOut || !fromNetwork) return
-      const ctx = ++debouncer.current
-      const amountIn = await calcAmount(amountOut, false)
-      const rate = Number(amountOut) / amountIn
-      if (ctx !== debouncer.current) return
-      setFromTokenAmount((Number(amountOut) / rate).toFixed(2))
-      setExchangeRate(rate)
-    } catch (err) {
-      logger.error(err)
-    }
-  }
+  const fromTokenAmountBN = useMemo<BigNumber | undefined>(() => {
+    return amountToBN(sourceToken, fromTokenAmount)
+  }, [sourceToken, fromTokenAmount])
 
-  const handleTokenSelect = (event: ChangeEvent<{ value: unknown }>) => {
-    const tokenSymbol = event.target.value
-    const newSelectedToken = tokens.find(token => token.symbol === tokenSymbol)
-    if (newSelectedToken) {
-      setSelectedToken(newSelectedToken)
-      if (fromNetwork && !fromNetwork?.isLayer1) {
-        setL2Bridge(
-          contracts?.tokens[newSelectedToken.symbol][
-            fromNetwork?.slug as string
-          ].l2Bridge
-        )
-        setUniswapRouter(
-          contracts?.tokens[newSelectedToken.symbol][
-            fromNetwork?.slug as string
-          ].uniswapRouter
-        )
-      } else if (toNetwork && !toNetwork?.isLayer1) {
-        setL2Bridge(
-          contracts?.tokens[newSelectedToken.symbol][toNetwork?.slug as string]
-            .l2Bridge
-        )
-        setUniswapRouter(
-          contracts?.tokens[newSelectedToken.symbol][toNetwork?.slug as string]
-            .uniswapRouter
-        )
-      }
+  const {
+    amountOut,
+    rate,
+    priceImpact,
+    amountOutMin,
+    intermediaryAmountOutMin,
+    bonderFee,
+    lpFees,
+    requiredLiquidity,
+    loading: loadingSendData,
+    l1Fee,
+    estimatedReceived
+  } = useSendData(
+    sourceToken,
+    slippageTolerance,
+    fromNetwork,
+    toNetwork,
+    fromTokenAmountBN
+  )
+
+  const l1FeeDisplay = toTokenDisplay(
+    l1Fee,
+    destToken?.decimals,
+    destToken?.symbol
+  )
+
+  const estimatedReceivedDisplay = toTokenDisplay(
+    estimatedReceived,
+    destToken?.decimals,
+    destToken?.symbol
+  )
+
+  const needsTokenForFee = useNeedsTokenForFee(fromNetwork)
+
+  useEffect(() => {
+    if (!destToken) {
+      setToTokenAmount('')
+      return
+    }
+
+    let amount
+    if (amountOut) {
+      amount = toTokenDisplay(amountOut, destToken.decimals)
+    }
+    setToTokenAmount(amount)
+  }, [destToken, amountOut])
+
+  const availableLiquidity = useAvailableLiquidity(selectedBridge, toNetwork?.slug)
+
+  const handleBridgeChange = (event: ChangeEvent<{ value: unknown }>) => {
+    const tokenSymbol = event.target.value as string
+    const bridge = bridges.find(bridge => bridge.getTokenSymbol() === tokenSymbol)
+    if (bridge) {
+      setSelectedBridge(bridge)
     }
   }
 
   const handleSwitchDirection = () => {
-    setToTokenAmount(fromTokenAmount)
-    setFromTokenAmount(toTokenAmount)
+    setToTokenAmount('')
     setFromNetwork(toNetwork)
     setToNetwork(fromNetwork)
-    setIsFromLastChanged(!isFromLastChanged)
+  }
 
-    if (toNetwork && !toNetwork?.isLayer1) {
-      setL2Bridge(
-        contracts?.tokens[selectedToken.symbol][toNetwork?.slug as string]
-          .l2Bridge
-      )
-      setUniswapRouter(
-        contracts?.tokens[selectedToken.symbol][toNetwork?.slug as string]
-          .uniswapRouter
-      )
+  const handleToNetworkChange = (network: Network | undefined) => {
+    if (network === fromNetwork) {
+      handleSwitchDirection()
+    } else {
+      setToNetwork(network)
+    }
+  }
+
+  const handleFromNetworkChange = (network: Network | undefined) => {
+    if (network === toNetwork) {
+      handleSwitchDirection()
+    } else {
+      setFromNetwork(network)
     }
   }
 
   useEffect(() => {
-    updateAmountOut(fromTokenAmount)
-  }, [fromNetwork])
+    const checkAvailableLiquidity = async () => {
+      if (
+        !toNetwork ||
+        !availableLiquidity ||
+        !requiredLiquidity ||
+        !sourceToken
+      ) {
+        setNoLiquidityWarning('')
+        return
+      }
 
-  useEffect(() => {
-    if (!toTokenAmount) {
-      updateAmountOut(fromTokenAmount)
+      const isAvailable = BigNumber.from(availableLiquidity).gte(
+        requiredLiquidity
+      )
+
+      const formattedAmount = formatUnits(
+        availableLiquidity,
+        sourceToken.decimals
+      )
+      const warningMessage = `Insufficient liquidity. There is ${formattedAmount} ${sourceToken.symbol} available on ${toNetwork.name}.`
+      if (!isAvailable && !fromNetwork?.isLayer1) {
+        if (reactAppNetwork !== 'staging') {
+          setIsLiquidityAvailable(false)
+          setNoLiquidityWarning(warningMessage)
+        }
+      } else {
+        setIsLiquidityAvailable(true)
+        setNoLiquidityWarning('')
+      }
     }
-  }, [toNetwork])
 
-  // Control toTokenAmount when fromTokenAmount was edited last
-  useEffect(() => {
-    if (!isFromLastChanged) return
-    updateAmountOut(fromTokenAmount)
-  }, [isFromLastChanged])
+    checkAvailableLiquidity()
+  }, [fromNetwork, sourceToken, toNetwork, availableLiquidity, requiredLiquidity])
 
-  // Control fromTokenAmount when toTokenAmount was edited last
-  useEffect(() => {
-    if (isFromLastChanged) return
-    updateAmountIn(toTokenAmount)
-  }, [isFromLastChanged])
-
-  const getBonderFee = async () => {
-    if (!fromNetwork) {
-      throw new Error('No from network selected')
-    }
-    if (!toNetwork) {
-      throw new Error('No to network selected')
-    }
-    const amountOut = await _calcAmount(
-      parseUnits(fromTokenAmount, 18),
-      true,
-      fromNetwork,
-      toNetwork
+  const checkingLiquidity = useMemo(() => {
+    return (
+      !fromNetwork?.isLayer1 &&
+      availableLiquidity === undefined
     )
-    const minBonderBps = await l2Bridge?.minBonderBps()
-    const minBonderFeeAbsolute = await l2Bridge?.minBonderFeeAbsolute()
-    const minBonderFeeRelative = amountOut.mul(minBonderBps).div(10000)
-    const minBonderFee = minBonderFeeRelative.gt(minBonderFeeAbsolute)
-      ? minBonderFeeRelative
-      : minBonderFeeAbsolute
-    return minBonderFee
-  }
+  }, [fromNetwork, availableLiquidity])
 
-  const approve = async (amount: string) => {
-    const signer = user?.signer()
-    if (!signer) {
-      throw new Error('Wallet not connected')
+  useEffect(() => {
+    if (needsTokenForFee && fromNetwork) {
+      setNeedsNativeTokenWarning(`Add ${fromNetwork.nativeTokenSymbol} to your account on ${fromNetwork.name} for the transaction fee.`)
+    } else {
+      setNeedsNativeTokenWarning('')
+    }
+  }, [needsTokenForFee, fromNetwork])
+
+  useEffect(() => {
+    const warningMessage = `Send at least ${l1FeeDisplay} to cover the transaction fee`
+    if (estimatedReceived?.lte(0) && l1Fee) {
+      setMinimumSendWarning(warningMessage)
+    } else {
+      setMinimumSendWarning('')
+    }
+  }, [estimatedReceived, l1Fee])
+
+  useEffect(() => {
+    setWarning(
+      noLiquidityWarning ||
+      minimumSendWarning ||
+      needsNativeTokenWarning
+    )
+  }, [noLiquidityWarning, needsNativeTokenWarning, minimumSendWarning])
+
+  useEffect(() => {
+    if (!lpFees || !sourceToken) {
+      setFeeDisplay(undefined)
+      return
     }
 
+    const smallestFeeDecimals = sourceToken.decimals - 5
+    const smallestFee = BigNumber.from(10 ** smallestFeeDecimals)
+    let feeAmount: string
+    if (lpFees.gt('0') && lpFees.lt(smallestFee)) {
+      feeAmount = `<${formatUnits(smallestFee, sourceToken.decimals)}`
+    } else {
+      feeAmount = commafy(formatUnits(lpFees, sourceToken.decimals), 5)
+    }
+
+    setFeeDisplay(`${feeAmount} ${sourceToken.symbol}`)
+  }, [lpFees])
+
+  useEffect(() => {
+    if (!amountOutMin || !sourceToken) {
+      setAmountOutMinDisplay(undefined)
+      return
+    }
+    let _amountOutMin = amountOutMin
+    if (l1Fee) {
+      _amountOutMin = _amountOutMin.sub(l1Fee)
+    }
+
+    const amountOutMinFormatted = commafy(
+      formatUnits(_amountOutMin, sourceToken.decimals),
+      4
+    )
+    setAmountOutMinDisplay(`${amountOutMinFormatted} ${sourceToken.symbol}`)
+  }, [amountOutMin])
+
+  const approve = useApprove()
+  const approveFromToken = async () => {
     if (!fromNetwork) {
       throw new Error('No fromNetwork selected')
     }
 
-    if (!toNetwork) {
-      throw new Error('No toNetwork selected')
+    if (!sourceToken) {
+      throw new Error('No from token selected')
     }
 
-    const tokenContractRead = selectedToken.contractForNetwork(fromNetwork)
-    const tokenContract = await getWriteContract(tokenContractRead)
-    if (!tokenContract) return // User needs to switch networks
-    const parsedAmount = parseUnits(amount, selectedToken.decimals || 18)
-    let tx: any
-    if (fromNetwork?.isLayer1) {
-      const approved = await tokenContract.allowance(
-        await signer?.getAddress(),
-        l1Bridge?.address
-      )
-      if (approved.lt(parsedAmount)) {
-        tx = await txConfirm?.show({
-          kind: 'approval',
-          inputProps: {
-            amount: amount,
-            token: selectedToken
-          },
-          onConfirm: async (approveAll: boolean) => {
-            const approveAmount = approveAll ? UINT256 : parsedAmount
-            return tokenContract.approve(l1Bridge?.address, approveAmount)
-          }
-        })
-        await tx?.wait()
-        if (tx?.hash && fromNetwork) {
-          txHistory?.addTransaction(
-            new Transaction({
-              hash: tx?.hash,
-              networkName: fromNetwork?.slug,
-              token: selectedToken
-            })
-          )
-        }
-      }
+    if (!fromTokenAmount) {
+      throw new Error('No amount to approve')
+    }
+    const parsedAmount = parseUnits(fromTokenAmount, sourceToken.decimals)
+    const bridge = sdk.bridge(sourceToken.symbol)
+
+    let spender : string
+    if (fromNetwork.isLayer1) {
+      const l1Bridge = await bridge.getL1Bridge()
+      spender = l1Bridge.address
     } else {
-      const uniswapWrapper =
-        contracts?.tokens[selectedToken?.symbol][fromNetwork?.slug as string]
-          .uniswapWrapper
-
-      const approved = await tokenContract.allowance(
-        await signer?.getAddress(),
-        uniswapWrapper?.address
-      )
-      if (approved.lt(parsedAmount)) {
-        tx = await txConfirm?.show({
-          kind: 'approval',
-          inputProps: {
-            amount: amount,
-            token: selectedToken
-          },
-          onConfirm: async (approveAll: boolean) => {
-            const approveAmount = approveAll ? UINT256 : parsedAmount
-            return tokenContract.approve(uniswapWrapper?.address, approveAmount)
-          }
-        })
-        await tx?.wait()
-        if (tx?.hash && fromNetwork) {
-          txHistory?.addTransaction(
-            new Transaction({
-              hash: tx?.hash,
-              networkName: fromNetwork?.slug,
-              token: selectedToken
-            })
-          )
-        }
-      }
+      const ammWrapper = await bridge.getAmmWrapper(fromNetwork.slug)
+      spender = ammWrapper.address
     }
 
-    if (tx?.hash && fromNetwork) {
-      txHistory?.addTransaction(
-        new Transaction({
-          hash: tx?.hash,
-          networkName: fromNetwork?.slug,
-          token: selectedToken
-        })
-      )
-    }
+    const tx = await approve(
+      parsedAmount,
+      sourceToken,
+      spender
+    )
+
+    await tx?.wait()
   }
 
   const send = async () => {
@@ -434,7 +429,7 @@ const Send: FC = () => {
       if (!isNetworkConnected) return
 
       setSending(true)
-      await approve(fromTokenAmount)
+      await approveFromToken()
       let tx: Transaction | null = null
       if (fromNetwork.isLayer1) {
         tx = await sendl1ToL2()
@@ -458,8 +453,11 @@ const Send: FC = () => {
 
   const sendl1ToL2 = async () => {
     const signer = provider?.getSigner()
-    if (!l1Bridge || !signer) {
-      throw new Error('Cannot send: l1Bridge or signer does not exist.')
+    if (!signer) {
+      throw new Error('Cannot send: signer does not exist.')
+    }
+    if (!sourceToken) {
+      throw new Error('No from token selected')
     }
 
     const tx: any = await txConfirm?.show({
@@ -467,7 +465,7 @@ const Send: FC = () => {
       inputProps: {
         source: {
           amount: fromTokenAmount,
-          token: selectedToken,
+          token: sourceToken,
           network: fromNetwork
         },
         dest: {
@@ -475,18 +473,28 @@ const Send: FC = () => {
         }
       },
       onConfirm: async () => {
-        const deadline = (Date.now() / 1000 + 300) | 0
-        const amountOutMin = '0'
-        const chainId = toNetwork?.networkId
-        const relayerFee = '0'
-        return l1Bridge.sendToL2(
-          chainId,
-          await signer.getAddress(),
-          parseUnits(fromTokenAmount, 18),
-          amountOutMin,
-          deadline,
-          relayerFee
+        if (!amountOutMin) return
+        const parsedAmount = parseUnits(
+          fromTokenAmount,
+          sourceToken.decimals
+        ).toString()
+        const recipient = await signer.getAddress()
+        const relayer = ethers.constants.AddressZero
+        const relayerFee = 0
+        const bridge = sdk.bridge(sourceToken.symbol).connect(signer)
+        const tx = await bridge.send(
+          parsedAmount,
+          sdk.Chain.Ethereum,
+          toNetwork?.slug,
+          {
+            deadline: deadline(),
+            relayer,
+            relayerFee,
+            recipient,
+            amountOutMin
+          }
         )
+        return tx
       }
     })
 
@@ -496,7 +504,7 @@ const Send: FC = () => {
         hash: tx?.hash,
         networkName: fromNetwork?.slug,
         destNetworkName: toNetwork?.slug,
-        token: selectedToken
+        token: sourceToken
       })
       txHistory?.addTransaction(txObj)
     }
@@ -506,8 +514,11 @@ const Send: FC = () => {
 
   const sendl2ToL1 = async () => {
     const signer = provider?.getSigner()
-    if (!l2Bridge || !signer) {
-      throw new Error('Cannot send: l1Bridge or signer does not exist.')
+    if (!signer) {
+      throw new Error('Cannot send: signer does not exist.')
+    }
+    if (!sourceToken) {
+      throw new Error('No from token selected')
     }
 
     const tx: any = await txConfirm?.show({
@@ -515,7 +526,7 @@ const Send: FC = () => {
       inputProps: {
         source: {
           amount: fromTokenAmount,
-          token: selectedToken,
+          token: sourceToken,
           network: fromNetwork
         },
         dest: {
@@ -523,36 +534,38 @@ const Send: FC = () => {
         }
       },
       onConfirm: async () => {
-        const deadline = (Date.now() / 1000 + 300) | 0
-        const destinationDeadline = '0'
-        const amountOutIn = '0'
-        const destinationAmountOutMin = '0'
-        const bonderFee = await getBonderFee()
-        const chainId = toNetwork?.networkId
-        const transferNonce = Date.now()
-        const uniswapWrapper =
-          contracts?.tokens[selectedToken?.symbol][fromNetwork?.slug as string]
-            .uniswapWrapper
-
-        const parsedAmountIn = parseUnits(fromTokenAmount, 18)
-        if (bonderFee.gt(parsedAmountIn)) {
-          throw new Error('Amount must be greater than bonder fee')
+        if (!amountOutMin || !bonderFee) return
+        console.log('amountOutMin: ', amountOutMin.toString())
+        const destinationAmountOutMin = 0
+        const destinationDeadline = 0
+        const parsedAmountIn = parseUnits(
+          fromTokenAmount,
+          sourceToken.decimals
+        )
+        const bridge = sdk.bridge(sourceToken.symbol).connect(signer)
+        let totalBonderFee = bonderFee
+        if (l1Fee) {
+          totalBonderFee = totalBonderFee.add(l1Fee)
         }
 
-        const wrapperWrite = await getWriteContract(uniswapWrapper)
-        return wrapperWrite?.swapAndSend(
-          chainId,
-          await signer?.getAddress(),
+        if (totalBonderFee.gt(parsedAmountIn)) {
+          throw new Error('Amount must be greater than bonder fee')
+        }
+        const recipient = await signer?.getAddress()
+        const tx = await bridge.send(
           parsedAmountIn,
-          bonderFee.toString(),
-          amountOutIn,
-          deadline,
-          destinationAmountOutMin,
-          destinationDeadline,
+          fromNetwork?.slug as string,
+          toNetwork?.slug as string,
           {
-            //gasLimit: 1000000
+            recipient,
+            bonderFee: totalBonderFee,
+            amountOutMin,
+            deadline: deadline(),
+            destinationAmountOutMin,
+            destinationDeadline
           }
         )
+        return tx
       }
     })
 
@@ -562,7 +575,7 @@ const Send: FC = () => {
         hash: tx?.hash,
         networkName: fromNetwork?.slug,
         destNetworkName: toNetwork?.slug,
-        token: selectedToken
+        token: sourceToken
       })
       txHistory?.addTransaction(txObj)
     }
@@ -572,8 +585,11 @@ const Send: FC = () => {
 
   const sendl2ToL2 = async () => {
     const signer = provider?.getSigner()
-    if (!l2Bridge || !signer) {
-      throw new Error('Cannot send: l1Bridge or signer does not exist.')
+    if (!signer) {
+      throw new Error('Cannot send: signer does not exist.')
+    }
+    if (!sourceToken) {
+      throw new Error('No from token selected')
     }
 
     const tx: any = await txConfirm?.show({
@@ -581,7 +597,7 @@ const Send: FC = () => {
       inputProps: {
         source: {
           amount: fromTokenAmount,
-          token: selectedToken,
+          token: sourceToken,
           network: fromNetwork
         },
         dest: {
@@ -589,32 +605,30 @@ const Send: FC = () => {
         }
       },
       onConfirm: async () => {
-        const deadline = (Date.now() / 1000 + 300) | 0
-        const destinationDeadline = deadline
-        const chainId = toNetwork?.networkId
-        const amountOutIn = '0'
-        const destinationAmountOutMin = '0'
-        const bonderFee = await getBonderFee()
-        const uniswapWrapper =
-          contracts?.tokens[selectedToken?.symbol][fromNetwork?.slug as string]
-            .uniswapWrapper
-
-        const parsedAmountIn = parseUnits(fromTokenAmount, 18)
+        if (!bonderFee) return
+        const parsedAmountIn = parseUnits(
+          fromTokenAmount,
+          sourceToken.decimals
+        )
+        const recipient = await signer?.getAddress()
+        const bridge = sdk.bridge(sourceToken.symbol).connect(signer)
         if (bonderFee.gt(parsedAmountIn)) {
           throw new Error('Amount must be greater than bonder fee')
         }
-
-        const wrapperWrite = await getWriteContract(uniswapWrapper)
-        return wrapperWrite?.swapAndSend(
-          chainId,
-          await signer?.getAddress(),
-          parseUnits(fromTokenAmount, 18),
-          bonderFee,
-          amountOutIn,
-          deadline,
-          destinationAmountOutMin,
-          destinationDeadline
+        const tx = await bridge.send(
+          parsedAmountIn,
+          fromNetwork?.slug as string,
+          toNetwork?.slug as string,
+          {
+            recipient,
+            bonderFee,
+            amountOutMin: intermediaryAmountOutMin,
+            deadline: deadline(),
+            destinationAmountOutMin: amountOutMin,
+            destinationDeadline: deadline()
+          }
         )
+        return tx
       }
     })
 
@@ -624,7 +638,7 @@ const Send: FC = () => {
         hash: tx?.hash,
         networkName: fromNetwork?.slug,
         destNetworkName: toNetwork?.slug,
-        token: selectedToken
+        token: sourceToken
       })
       txHistory?.addTransaction(txObj)
     }
@@ -632,13 +646,19 @@ const Send: FC = () => {
     return txObj
   }
 
-  const enoughBalance = fromBalance >= Number(fromTokenAmount)
+  let enoughBalance = true
+  if (fromBalance && fromTokenAmountBN && fromBalance.lt(fromTokenAmountBN)) {
+    enoughBalance = false
+  }
   const validFormFields = !!(
     fromTokenAmount &&
     toTokenAmount &&
-    exchangeRate &&
+    rate &&
     enoughBalance &&
-    !fetchingRate
+    !needsTokenForFee &&
+    isLiquidityAvailable &&
+    !checkingLiquidity &&
+    estimatedReceived?.gt(0)
   )
 
   let buttonText = 'Send'
@@ -650,8 +670,14 @@ const Send: FC = () => {
     buttonText = 'Select to network'
   } else if (!enoughBalance) {
     buttonText = 'Insufficient funds'
-  } else if (fetchingRate) {
-    buttonText = 'Fetching rate...'
+  } else if (needsTokenForFee) {
+    buttonText = `Insufficient ${fromNetwork.nativeTokenSymbol}`
+  } else if (!isLiquidityAvailable) {
+    buttonText = 'Insufficient liquidity'
+  } else if (checkingLiquidity) {
+    buttonText = 'Checking liquidity'
+  } else if (estimatedReceived?.lte(0)) {
+    buttonText = 'Insufficient amount'
   }
 
   const handleTxStatusClose = () => {
@@ -660,25 +686,30 @@ const Send: FC = () => {
 
   return (
     <Box display="flex" flexDirection="column" alignItems="center">
-      <Box display="flex" alignItems="center" className={styles.sendSelect}>
-        <Typography variant="h4" className={styles.sendLabel}>
-          Send
-        </Typography>
-        <RaisedSelect value={selectedToken.symbol} onChange={handleTokenSelect}>
-          {tokens.map(token => (
-            <MenuItem value={token.symbol} key={token.symbol}>
-              <SelectOption
-                value={token.symbol}
-                icon={token.imageUrl}
-                label={token.symbol}
-              />
-            </MenuItem>
-          ))}
-        </RaisedSelect>
-      </Box>
+      <div className={styles.header}>
+        <Box display="flex" alignItems="center" className={styles.sendSelect}>
+          <Typography variant="h4" className={styles.sendLabel}>
+            Send
+          </Typography>
+          <RaisedSelect
+            value={selectedBridge?.getTokenSymbol()}
+            onChange={handleBridgeChange}
+          >
+            {bridges.map(bridge => (
+              <MenuItem value={bridge.getTokenSymbol()} key={bridge.getTokenSymbol()}>
+                <SelectOption
+                  value={bridge.getTokenSymbol()}
+                  icon={bridge.getTokenImage()}
+                  label={bridge.getTokenSymbol()}
+                />
+              </MenuItem>
+            ))}
+          </RaisedSelect>
+        </Box>
+      </div>
       <AmountSelectorCard
         value={fromTokenAmount}
-        token={selectedToken}
+        token={sourceToken ?? placeholderToken}
         label={'From'}
         onChange={value => {
           if (!value) {
@@ -689,27 +720,12 @@ const Send: FC = () => {
 
           const amountIn = normalizeNumberInput(value)
           setFromTokenAmount(amountIn)
-          setIsFromLastChanged(true)
-          updateAmountOut(amountIn)
         }}
         selectedNetwork={fromNetwork}
         networkOptions={networks}
-        onNetworkChange={network => {
-          setFromNetwork(network)
-          if (network && !network?.isLayer1) {
-            setL2Bridge(
-              contracts?.tokens[selectedToken.symbol][network?.slug as string]
-                .l2Bridge
-            )
-            setUniswapRouter(
-              contracts?.tokens[selectedToken.symbol][network?.slug as string]
-                .uniswapRouter
-            )
-          }
-        }}
-        onBalanceChange={balance => {
-          setFromBalance(balance)
-        }}
+        onNetworkChange={handleFromNetworkChange}
+        balance={fromBalance}
+        loadingBalance={loadingFromBalance}
       />
       <MuiButton
         className={styles.switchDirectionButton}
@@ -719,78 +735,53 @@ const Send: FC = () => {
       </MuiButton>
       <AmountSelectorCard
         value={toTokenAmount}
-        token={selectedToken}
+        token={destToken ?? placeholderToken}
         label={'To (estimated)'}
-        onChange={value => {
-          if (!value) {
-            setToTokenAmount('')
-            setFromTokenAmount('')
-            return
-          }
-
-          const amountOut = normalizeNumberInput(value)
-          setToTokenAmount(amountOut)
-          setIsFromLastChanged(false)
-          updateAmountIn(amountOut)
-        }}
         selectedNetwork={toNetwork}
         networkOptions={networks}
-        onNetworkChange={network => {
-          setToNetwork(network)
-        }}
-        onBalanceChange={balance => {
-          setToBalance(balance)
-        }}
+        onNetworkChange={handleToNetworkChange}
+        balance={toBalance}
+        loadingBalance={loadingToBalance}
+        loadingValue={loadingSendData}
+        disableInput
       />
-      <Box
-        display="flex"
-        alignItems="center"
-        justifyContent="space-between"
-        className={styles.detailRow}
-      >
-        <Typography variant="subtitle2" color="textSecondary">
-          Rate
-        </Typography>
-        <Typography
-          title={`${exchangeRate}`}
-          variant="subtitle2"
-          color="textSecondary"
-        >
-          {fetchingRate ? (
-            <CircularProgress size={12} />
-          ) : exchangeRate === 0 ? (
-            '-'
-          ) : (
-            commafy(exchangeRate)
-          )}
-        </Typography>
-      </Box>
+      <div className={styles.details}>
+        <div className={styles.l1FeeAndAmount}>
+          {
+            l1Fee &&
+            <DetailRow
+              title="L1 Transaction Fee"
+              tooltip="This fee covers the L1 transaction fee paid by the Bonder."
+              value={l1FeeDisplay}
+              large
+            />
+          }
+          <DetailRow
+            title="Estimated Received"
+            tooltip={
+              <AmmDetails
+                rate={rate}
+                slippageTolerance={slippageTolerance}
+                priceImpact={priceImpact}
+                amountOutMinDisplay={amountOutMinDisplay}
+              />
+            }
+            value={estimatedReceivedDisplay}
+            large
+            bold
+          />
+        </div>
+      </div>
       <Alert severity="error" onClose={() => setError(null)} text={error} />
+      <Alert severity="warning" text={warning} />
       <SendButton sending={sending} disabled={!validFormFields} onClick={send}>
         {buttonText}
       </SendButton>
       <br />
       <Alert severity="info" onClose={() => setInfo(null)} text={info} />
-      {tx ? (
-        <Modal onClose={handleTxStatusClose}>
-          <TxStatus tx={tx} />
-          <Box
-            display="flex"
-            alignItems="center"
-            className={styles.txStatusInfo}
-          >
-            <Typography variant="body1">
-              <em>This may take a few minutes</em>
-            </Typography>
-            <MuiButton
-              className={styles.txStatusCloseButton}
-              onClick={handleTxStatusClose}
-            >
-              Close
-            </MuiButton>
-          </Box>
-        </Modal>
-      ) : null}
+      <TxStatusModal
+        onClose={handleTxStatusClose}
+        tx={tx} />
     </Box>
   )
 }
