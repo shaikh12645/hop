@@ -1,18 +1,16 @@
 import '../moduleAlias'
 import BaseWatcher from './classes/BaseWatcher'
 import L1Bridge from './classes/L1Bridge'
+import { ChallengeableTransferRoot } from 'src/db/TransferRootsDb'
 import { L1Bridge as L1BridgeContract } from '@hop-protocol/core/contracts/L1Bridge'
-import { L1ERC20Bridge as L1ERC20BridgeContract } from '@hop-protocol/core/contracts/L1ERC20Bridge'
 import { L2Bridge as L2BridgeContract } from '@hop-protocol/core/contracts/L2Bridge'
 import { Notifier } from 'src/notifier'
 import { hostname } from 'src/config'
 
 type Config = {
   chainSlug: string
-  bridgeContract: L1BridgeContract | L1ERC20BridgeContract | L2BridgeContract
+  bridgeContract: L1BridgeContract | L2BridgeContract
   tokenSymbol: string
-  label: string
-  isL1: boolean
   dryMode?: boolean
 }
 
@@ -23,10 +21,7 @@ class ChallengeWatcher extends BaseWatcher {
     super({
       chainSlug: config.chainSlug,
       tokenSymbol: config.tokenSymbol,
-      tag: 'ChallengeWatcher',
-      prefix: config.label,
       bridgeContract: config.bridgeContract,
-      isL1: config.isL1,
       logColor: 'red',
       dryMode: config.dryMode
     })
@@ -60,10 +55,10 @@ class ChallengeWatcher extends BaseWatcher {
   async checkChallengeableTransferRoot (transferRootId: string) {
     const logger = this.logger.create({ root: transferRootId })
 
-    const { transferRootHash, totalAmount } = await this.db.transferRoots.getByTransferRootId(transferRootId)
+    const { transferRootHash, totalAmount } = await this.db.transferRoots.getByTransferRootId(transferRootId) as ChallengeableTransferRoot
     logger.debug('Challenging transfer root', transferRootId)
     logger.debug('transferRootHash:', transferRootHash)
-    logger.debug('totalAmount:', this.bridge.formatUnits(totalAmount!))
+    logger.debug('totalAmount:', this.bridge.formatUnits(totalAmount))
     logger.debug('transferRootId:', transferRootId)
 
     const dbTransferRoot = await this.db.transferRoots.getByTransferRootId(
@@ -103,9 +98,8 @@ class ChallengeWatcher extends BaseWatcher {
       return
     }
 
-    await this.handleStateSwitch()
-    if (this.isDryOrPauseMode) {
-      logger.warn(`dry: ${this.dryMode}, pause: ${this.pauseMode}. skipping challengeTransferRootBond`)
+    if (this.dryMode) {
+      logger.warn(`dry: ${this.dryMode}, skipping challengeTransferRootBond`)
       return
     }
 

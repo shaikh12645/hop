@@ -9,10 +9,9 @@ import { useApp } from 'src/contexts/AppContext'
 import RaisedSelect from 'src/components/selects/RaisedSelect'
 import SelectOption from 'src/components/selects/SelectOption'
 import ConvertContent from 'src/pages/Convert/ConvertContent'
-import InfoTooltip from 'src/components/infoTooltip'
+import InfoTooltip from 'src/components/InfoTooltip'
 import { useConvert } from 'src/pages/Convert/ConvertContext'
-import useQueryParams from 'src/hooks/useQueryParams'
-import { findMatchingBridge, findNetworkBySlug } from 'src/utils'
+import { findMatchingBridge } from 'src/utils'
 import { l2Networks } from 'src/config/networks'
 
 const useStyles = makeStyles(theme => ({
@@ -43,11 +42,10 @@ const useStyles = makeStyles(theme => ({
 const Convert: FC = () => {
   const styles = useStyles()
   const { bridges, selectedBridge, setSelectedBridge } = useApp()
-  const { convertOptions, selectedNetwork, setSelectedNetwork } = useConvert()
+  const { convertOptions, selectedNetwork, selectBothNetworks } = useConvert()
   const { pathname, search } = useLocation()
   const { path } = useRouteMatch()
   const history = useHistory()
-  const { updateQueryParams } = useQueryParams()
 
   const handleBridgeChange = (event: ChangeEvent<{ value: unknown }>) => {
     const tokenSymbol = event.target.value as string
@@ -55,18 +53,6 @@ const Convert: FC = () => {
     const bridge = findMatchingBridge(bridges, tokenSymbol)
     if (bridge) {
       setSelectedBridge(bridge)
-    }
-  }
-
-  const handleNetworkChange = (event: ChangeEvent<{ value: unknown }>) => {
-    const slug = event.target.value as string
-    const network = findNetworkBySlug(slug)
-    if (network) {
-      updateQueryParams({
-        sourceNetwork: network.slug ?? '',
-        destNetwork: network.slug ?? '',
-      })
-      setSelectedNetwork(network)
     }
   }
 
@@ -88,7 +74,7 @@ const Convert: FC = () => {
       </Box>
       <Grid className={styles.selects}>
         <div className={styles.select}>
-          <RaisedSelect value={selectedNetwork?.slug} onChange={handleNetworkChange}>
+          <RaisedSelect value={selectedNetwork?.slug} onChange={selectBothNetworks}>
             {l2Networks.map(network => (
               <MenuItem value={network.slug} key={network.slug}>
                 <SelectOption value={network.slug} icon={network.imageUrl} label={network.name} />

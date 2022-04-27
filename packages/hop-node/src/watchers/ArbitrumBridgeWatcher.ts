@@ -4,16 +4,13 @@ import wallets from 'src/wallets'
 import { Bridge, OutgoingMessageState } from 'arb-ts'
 import { Chain } from 'src/constants'
 import { L1Bridge as L1BridgeContract } from '@hop-protocol/core/contracts/L1Bridge'
-import { L1ERC20Bridge as L1ERC20BridgeContract } from '@hop-protocol/core/contracts/L1ERC20Bridge'
 import { L2Bridge as L2BridgeContract } from '@hop-protocol/core/contracts/L2Bridge'
 import { Wallet, providers } from 'ethers'
 
 type Config = {
   chainSlug: string
   tokenSymbol: string
-  label?: string
-  bridgeContract?: L1BridgeContract | L1ERC20BridgeContract | L2BridgeContract
-  isL1?: boolean
+  bridgeContract?: L1BridgeContract | L2BridgeContract
   dryMode?: boolean
 }
 
@@ -27,11 +24,8 @@ class ArbitrumBridgeWatcher extends BaseWatcher {
     super({
       chainSlug: config.chainSlug,
       tokenSymbol: config.tokenSymbol,
-      tag: 'ArbitrumBridgeWatcher',
-      prefix: config.label,
       logColor: 'yellow',
       bridgeContract: config.bridgeContract,
-      isL1: config.isL1,
       dryMode: config.dryMode
     })
 
@@ -91,9 +85,8 @@ class ArbitrumBridgeWatcher extends BaseWatcher {
     logger.debug(
       `attempting to send relay message on arbitrum for commit tx hash ${commitTxHash}`
     )
-    await this.handleStateSwitch()
-    if (this.isDryOrPauseMode) {
-      this.logger.warn(`dry: ${this.dryMode}, pause: ${this.pauseMode}. skipping relayXDomainMessage`)
+    if (this.dryMode) {
+      this.logger.warn(`dry: ${this.dryMode}, skipping relayXDomainMessage`)
       return
     }
 

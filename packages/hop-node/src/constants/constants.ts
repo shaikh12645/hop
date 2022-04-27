@@ -15,6 +15,20 @@ export enum Chain {
   Gnosis = 'gnosis',
 }
 
+export enum NativeChainToken {
+  ETH = 'ETH',
+  XDAI = 'XDAI',
+  MATIC = 'MATIC'
+}
+
+export const nativeChainTokens: Record<string, string> = {
+  ethereum: NativeChainToken.ETH,
+  arbitrum: NativeChainToken.ETH,
+  optimism: NativeChainToken.ETH,
+  polygon: NativeChainToken.MATIC,
+  gnosis: NativeChainToken.XDAI
+}
+
 export enum Token {
   USDC = 'USDC',
   DAI = 'DAI',
@@ -36,6 +50,7 @@ export const SettlementGasLimitPerTx: Record<string, number> = {
 
 const SecondsInDay = 86400
 const SecondsInWeek = SecondsInDay * 7
+export const OneDayMs = SecondsInDay * 1000
 export const TotalBlocks = {
   Ethereum: Math.floor(SecondsInWeek / AvgBlockTimeSeconds.Ethereum),
   Polygon: Math.floor(SecondsInWeek / AvgBlockTimeSeconds.Polygon),

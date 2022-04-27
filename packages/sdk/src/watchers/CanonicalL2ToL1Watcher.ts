@@ -1,12 +1,12 @@
 import CanonicalBridge from '../CanonicalBridge'
-import erc20Abi from '@hop-protocol/core/abi/generated/ERC20.json'
+import EventEmitter from 'eventemitter3'
 import { default as BaseWatcher } from './BaseWatcher'
 import { Chain } from '../models'
-import { Contract } from 'ethers'
+import { ERC20__factory } from '@hop-protocol/core/contracts/factories/ERC20__factory'
 import { tokenTransferTopic, tokensBridgedTopic } from '../constants/eventTopics'
 
 class L1ToL2Watcher extends BaseWatcher {
-  public watch () {
+  public watch (): EventEmitter {
     this.start().catch((err: Error) => this.ee.emit('error', err))
     return this.ee
   }
@@ -96,9 +96,8 @@ class L1ToL2Watcher extends BaseWatcher {
       this.token,
       Chain.Ethereum
     )
-    const contract = new Contract(
+    const contract = ERC20__factory.connect(
       tokenAddress,
-      erc20Abi,
       await this.getSignerOrProvider(Chain.Ethereum)
     )
     const filter: any = {

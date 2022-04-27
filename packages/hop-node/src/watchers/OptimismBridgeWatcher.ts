@@ -4,7 +4,6 @@ import wallets from 'src/wallets'
 import { Chain } from 'src/constants'
 import { Contract, Wallet, providers } from 'ethers'
 import { L1Bridge as L1BridgeContract } from '@hop-protocol/core/contracts/L1Bridge'
-import { L1ERC20Bridge as L1ERC20BridgeContract } from '@hop-protocol/core/contracts/L1ERC20Bridge'
 import { L2Bridge as L2BridgeContract } from '@hop-protocol/core/contracts/L2Bridge'
 import { Watcher } from '@eth-optimism/core-utils'
 import { getContractFactory, predeploys } from '@eth-optimism/contracts'
@@ -12,9 +11,7 @@ import { getMessagesAndProofsForL2Transaction } from '@eth-optimism/message-rela
 type Config = {
   chainSlug: string
   tokenSymbol: string
-  label?: string
-  bridgeContract?: L1BridgeContract | L1ERC20BridgeContract | L2BridgeContract
-  isL1?: boolean
+  bridgeContract?: L1BridgeContract | L2BridgeContract
   dryMode?: boolean
 }
 
@@ -31,11 +28,8 @@ class OptimismBridgeWatcher extends BaseWatcher {
     super({
       chainSlug: config.chainSlug,
       tokenSymbol: config.tokenSymbol,
-      prefix: config.label,
-      tag: 'OptimismBridgeWatcher',
       logColor: 'yellow',
       bridgeContract: config.bridgeContract,
-      isL1: config.isL1,
       dryMode: config.dryMode
     })
 
@@ -104,9 +98,8 @@ class OptimismBridgeWatcher extends BaseWatcher {
       `attempting to send relay message on optimism for commit tx hash ${commitTxHash}`
     )
 
-    await this.handleStateSwitch()
-    if (this.isDryOrPauseMode) {
-      logger.warn(`dry: ${this.dryMode}, pause: ${this.pauseMode}. skipping relayXDomainMessage`)
+    if (this.dryMode) {
+      logger.warn(`dry: ${this.dryMode}, skipping relayXDomainMessage`)
       return
     }
 

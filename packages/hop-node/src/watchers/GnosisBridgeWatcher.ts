@@ -7,7 +7,6 @@ import wallets from 'src/wallets'
 import { Chain } from 'src/constants'
 import { Contract, providers } from 'ethers'
 import { L1Bridge as L1BridgeContract } from '@hop-protocol/core/contracts/L1Bridge'
-import { L1ERC20Bridge as L1ERC20BridgeContract } from '@hop-protocol/core/contracts/L1ERC20Bridge'
 import { L1XDaiAMB, L2XDaiAMB } from '@hop-protocol/core/contracts'
 import { L2Bridge as L2BridgeContract } from '@hop-protocol/core/contracts/L2Bridge'
 import { config as globalConfig } from 'src/config'
@@ -16,10 +15,8 @@ import { solidityKeccak256 } from 'ethers/lib/utils'
 type Config = {
   chainSlug: string
   tokenSymbol: string
-  label?: string
-  l1BridgeContract?: L1BridgeContract | L1ERC20BridgeContract
-  bridgeContract?: L1BridgeContract | L1ERC20BridgeContract | L2BridgeContract
-  isL1?: boolean
+  l1BridgeContract?: L1BridgeContract
+  bridgeContract?: L1BridgeContract | L2BridgeContract
   dryMode?: boolean
 }
 
@@ -44,11 +41,8 @@ class GnosisBridgeWatcher extends BaseWatcher {
     super({
       chainSlug: config.chainSlug,
       tokenSymbol: config.tokenSymbol,
-      tag: 'GnosisBridgeWatcher',
-      prefix: config.label,
       logColor: 'yellow',
       bridgeContract: config.bridgeContract,
-      isL1: config.isL1,
       dryMode: config.dryMode
     })
     if (config.l1BridgeContract != null) {
@@ -60,9 +54,9 @@ class GnosisBridgeWatcher extends BaseWatcher {
     logger.debug(
       `attempting to send relay message on gnosis for commit tx hash ${commitTxHash}`
     )
-    await this.handleStateSwitch()
-    if (this.isDryOrPauseMode) {
-      logger.warn(`dry: ${this.dryMode}, pause: ${this.pauseMode}. skipping relayXDomainMessage`)
+
+    if (this.dryMode) {
+      logger.warn(`dry: ${this.dryMode}, skipping relayXDomainMessage`)
       return
     }
     await this.db.transferRoots.update(transferRootId, {

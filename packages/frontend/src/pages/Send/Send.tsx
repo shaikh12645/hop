@@ -5,7 +5,7 @@ import ArrowDownIcon from '@material-ui/icons/ArrowDownwardRounded'
 import SendAmountSelectorCard from 'src/pages/Send/SendAmountSelectorCard'
 import Alert from 'src/components/alert/Alert'
 import TxStatusModal from 'src/components/modal/TxStatusModal'
-import DetailRow from 'src/components/DetailRow'
+import DetailRow from 'src/components/InfoTooltip/DetailRow'
 import { BigNumber } from 'ethers'
 import { formatUnits } from 'ethers/lib/utils'
 import Network from 'src/models/Network'
@@ -15,9 +15,10 @@ import logger from 'src/logger'
 import { commafy, findMatchingBridge, sanitizeNumericalString, toTokenDisplay } from 'src/utils'
 import useSendData from 'src/pages/Send/useSendData'
 import AmmDetails from 'src/components/AmmDetails'
-import FeeDetails from 'src/components/FeeDetails'
+import FeeDetails from 'src/components/InfoTooltip/FeeDetails'
 import { hopAppNetwork } from 'src/config'
-import InfoTooltip from 'src/components/infoTooltip'
+import InfoTooltip from 'src/components/InfoTooltip'
+import { ChainSlug } from '@hop-protocol/sdk'
 import { amountToBN, formatError } from 'src/utils/format'
 import { useSendStyles } from './useSendStyles'
 import SendHeader from './SendHeader'
@@ -32,10 +33,15 @@ import {
   useQueryParams,
   useNeedsTokenForFee,
   useBalance,
-  useNativeTokenMaxValue,
+  useEstimateTxCost,
+  useTxResult,
+  useSufficientBalance,
+  useDisableTxs,
+  useGnosisSafeTransaction,
 } from 'src/hooks'
 import { ButtonsWrapper } from 'src/components/buttons/ButtonsWrapper'
-import { ChainSlug } from '@hop-protocol/sdk'
+import useAvailableLiquidity from './useAvailableLiquidity'
+import useIsSmartContractWallet from 'src/hooks/useIsSmartContractWallet'
 import { ExternalLink } from 'src/components/Link'
 
 const Send: FC = () => {
@@ -58,19 +64,27 @@ const Send: FC = () => {
   const [fromTokenAmount, setFromTokenAmount] = useState<string>()
   const [toTokenAmount, setToTokenAmount] = useState<string>()
   const [approving, setApproving] = useState<boolean>(false)
-  const [feeDisplay, setFeeDisplay] = useState<string>()
   const [amountOutMinDisplay, setAmountOutMinDisplay] = useState<string>()
   const [warning, setWarning] = useState<any>(null)
   const [error, setError] = useState<string | null | undefined>(null)
   const [noLiquidityWarning, setNoLiquidityWarning] = useState<any>(null)
-  const [needsNativeTokenWarning, setNeedsNativeTokenWarning] = useState<string>()
   const [minimumSendWarning, setMinimumSendWarning] = useState<string | null | undefined>(null)
-  const [insufficientFundsWarning, setInsufficientFundsWarning] = useState<
-    string | null | undefined
-  >(null)
   const [info, setInfo] = useState<string | null | undefined>(null)
   const [isLiquidityAvailable, setIsLiquidityAvailable] = useState<boolean>(true)
   const [customRecipient, setCustomRecipient] = useState<string>()
+  const [manualWarning, setManualWarning] = useState<string>('')
+  const { isSmartContractWallet } = useIsSmartContractWallet()
+  const [manualError, setManualError] = useState<string>('')
+
+  // Reset error message when fromNetwork/toNetwork changes
+  useEffect(() => {
+    if (warning) {
+      setWarning('')
+    }
+    if (error) {
+      setError('')
+    }
+  }, [fromNetwork, toNetwork])
 
   // Set fromNetwork and toNetwork using query params
   useEffect(() => {
@@ -95,16 +109,8 @@ const Send: FC = () => {
   )
 
   // Get token balances for both networks
-  const { balance: fromBalance, loading: loadingFromBalance } = useBalance(
-    sourceToken,
-    fromNetwork,
-    address
-  )
-  const { balance: toBalance, loading: loadingToBalance } = useBalance(
-    destToken,
-    toNetwork,
-    address
-  )
+  const { balance: fromBalance, loading: loadingFromBalance } = useBalance(sourceToken, address)
+  const { balance: toBalance, loading: loadingToBalance } = useBalance(destToken, address)
 
   // Set fromToken -> BN
   const fromTokenAmountBN = useMemo<BigNumber | undefined>(() => {
@@ -113,6 +119,13 @@ const Send: FC = () => {
     }
   }, [sourceToken, fromTokenAmount])
 
+  // Get available liquidity
+  const { availableLiquidity } = useAvailableLiquidity(
+    selectedBridge,
+    fromNetwork?.slug,
+    toNetwork?.slug
+  )
+
   // Use send data for tx
   const {
     amountOut,
@@ -120,23 +133,14 @@ const Send: FC = () => {
     priceImpact,
     amountOutMin,
     intermediaryAmountOutMin,
-    lpFees,
     adjustedBonderFee,
     adjustedDestinationTxFee,
     totalFee,
     requiredLiquidity,
-    availableLiquidity,
     loading: loadingSendData,
     estimatedReceived,
     error: sendDataError,
-  } = useSendData(
-    sourceToken,
-    slippageTolerance,
-    fromNetwork,
-    toNetwork,
-    fromTokenAmountBN,
-    selectedBridge
-  )
+  } = useSendData(sourceToken, slippageTolerance, fromNetwork, toNetwork, fromTokenAmountBN)
 
   // Set toAmount
   useEffect(() => {
@@ -156,62 +160,27 @@ const Send: FC = () => {
   const {
     destinationTxFeeDisplay,
     bonderFeeDisplay,
-    totalBonderFee,
     totalBonderFeeDisplay,
     estimatedReceivedDisplay,
   } = useFeeConversions(adjustedDestinationTxFee, adjustedBonderFee, estimatedReceived, destToken)
 
-  // Check if user has enough balance (more than the inputed value)
-  const enoughBalance = useMemo(() => {
-    if (fromBalance && fromTokenAmountBN && fromBalance.lt(fromTokenAmountBN)) {
-      return false
-    }
-    return true
-  }, [fromBalance, fromTokenAmountBN])
+  const { estimateSend } = useEstimateTxCost(fromNetwork)
 
-  const { estimateSend } = useNativeTokenMaxValue(fromNetwork)
+  const { data: estimatedGasCost } = useTxResult(
+    sourceToken,
+    fromNetwork,
+    toNetwork,
+    fromTokenAmountBN,
+    estimateSend,
+    { deadline }
+  )
 
-  useEffect(() => {
-    let isSubscribed = true
-    const update = async () => {
-      let warning = ''
-      try {
-        if (
-          !(sourceToken && fromNetwork && toNetwork && deadline && fromTokenAmountBN && fromBalance)
-        ) {
-          return
-        }
-        const bridge = sdk.bridge(sourceToken.symbol)
-        const isNativeToken = bridge.isNativeToken(fromNetwork.slug)
-        if (isNativeToken) {
-          const options = {
-            token: sourceToken,
-            fromNetwork,
-            toNetwork,
-            deadline,
-          }
-          const estimatedGasCost = await estimateSend(options)
-          if (estimatedGasCost) {
-            const insufficientFunds = fromBalance.lt(estimatedGasCost.add(fromTokenAmountBN))
-            if (insufficientFunds) {
-              warning = `Insufficient balance. Please add ${sourceToken.symbol} to pay for tx fees or reduce from token amount.`
-            }
-          }
-        }
-      } catch (err) {
-        logger.error(err)
-      }
-      if (isSubscribed) {
-        setInsufficientFundsWarning(warning)
-      }
-    }
-
-    update().catch(logger.error)
-
-    return () => {
-      isSubscribed = false
-    }
-  }, [sourceToken, fromNetwork, toNetwork, deadline, fromTokenAmountBN, fromBalance])
+  const { sufficientBalance, warning: sufficientBalanceWarning } = useSufficientBalance(
+    sourceToken,
+    fromTokenAmountBN,
+    estimatedGasCost,
+    fromBalance
+  )
 
   // ==============================================================================================
   // Error and warning messages
@@ -225,16 +194,10 @@ const Send: FC = () => {
     if (unsupportedAsset) {
       const { chain, tokenSymbol } = unsupportedAsset
       setError(`${tokenSymbol} is currently not supported on ${chain}`)
-    } else {
+    } else if (error) {
       setError('')
     }
   }, [unsupportedAsset])
-
-  // Reset error message when fromNetwork changes
-  useEffect(() => {
-    setWarning('')
-    setError('')
-  }, [fromNetwork, toNetwork])
 
   // Check if there is sufficient available liquidity
   useEffect(() => {
@@ -269,10 +232,10 @@ const Send: FC = () => {
           />
         </>
       )
-      if (!isAvailable && !fromNetwork?.isLayer1) {
+      if (!isAvailable) {
         if (hopAppNetwork !== 'staging') {
           setIsLiquidityAvailable(false)
-          setNoLiquidityWarning(warningMessage)
+          return setNoLiquidityWarning(warningMessage)
         }
       } else {
         setIsLiquidityAvailable(true)
@@ -290,113 +253,41 @@ const Send: FC = () => {
   const needsTokenForFee = useNeedsTokenForFee(fromNetwork)
 
   useEffect(() => {
-    let isSubscribed = true
-    const update = async () => {
-      try {
-        if (
-          needsTokenForFee &&
-          fromNetwork &&
-          toNetwork &&
-          fromTokenAmountBN &&
-          fromBalance &&
-          deadline &&
-          sourceToken?.isNativeToken
-        ) {
-          const options = {
-            token: sourceToken,
-            fromNetwork,
-            toNetwork,
-            deadline,
-          }
-
-          const estimatedGasCost = await estimateSend(options)
-
-          if (estimatedGasCost && fromBalance?.lt(estimatedGasCost)) {
-            const shortBalance = estimatedGasCost.sub(fromBalance)
-            const warning = `Add ${toTokenDisplay(shortBalance, sourceToken?.decimals)} ${
-              fromNetwork.nativeTokenSymbol
-            } to your account on ${fromNetwork.name} for the transaction fee.`
-            if (isSubscribed) {
-              setNeedsNativeTokenWarning(warning)
-            }
-          } else {
-            setNeedsNativeTokenWarning('')
-          }
-        }
-      } catch (err) {
-        logger.error(err)
-      }
-    }
-
-    update().catch(logger.error)
-
-    return () => {
-      isSubscribed = false
-    }
-  }, [
-    sourceToken,
-    needsTokenForFee,
-    fromNetwork,
-    toNetwork,
-    fromTokenAmountBN,
-    fromBalance,
-    deadline,
-  ])
-
-  useEffect(() => {
     const warningMessage = `Send at least ${destinationTxFeeDisplay} to cover the transaction fee`
     if (estimatedReceived?.lte(0) && adjustedDestinationTxFee?.gt(0)) {
       setMinimumSendWarning(warningMessage)
-    } else {
+    } else if (minimumSendWarning) {
       setMinimumSendWarning('')
     }
   }, [estimatedReceived, adjustedDestinationTxFee])
 
   useEffect(() => {
-    let message = noLiquidityWarning || minimumSendWarning || insufficientFundsWarning
+    let message = noLiquidityWarning || minimumSendWarning
 
-    if (!enoughBalance) {
-      message = 'Insufficient funds'
+    const isFavorableSlippage = Number(toTokenAmount) >= Number(fromTokenAmount)
+    const isHighPriceImpact = priceImpact && priceImpact !== 100 && Math.abs(priceImpact) >= 1
+    const showPriceImpactWarning = isHighPriceImpact && !isFavorableSlippage
+
+    if (sufficientBalanceWarning) {
+      message = sufficientBalanceWarning
     } else if (estimatedReceived && adjustedBonderFee?.gt(estimatedReceived)) {
       message = 'Bonder fee greater than estimated received'
     } else if (estimatedReceived?.lte(0)) {
-      message = 'Insufficient amount. Send higher amount to cover bonder fee.'
-    } else if (priceImpact && priceImpact !== 100 && (priceImpact >= 1 || priceImpact <= -1)) {
-      message = `Warning: High Price Impact! ${commafy(priceImpact)}%`
-    }
-
-    if (needsNativeTokenWarning) {
-      message = needsNativeTokenWarning
+      message = 'Estimated received too low. Send a higher amount to cover the fees.'
+    } else if (showPriceImpactWarning) {
+      message = `Warning: Price impact is high. Slippage is ${commafy(priceImpact)}%`
     }
 
     setWarning(message)
   }, [
     noLiquidityWarning,
-    needsNativeTokenWarning,
     minimumSendWarning,
-    enoughBalance,
+    sufficientBalanceWarning,
     estimatedReceived,
     priceImpact,
-    insufficientFundsWarning,
+    fromTokenAmount,
+    toTokenAmount,
   ])
-
-  useEffect(() => {
-    if (!lpFees || !sourceToken) {
-      setFeeDisplay(undefined)
-      return
-    }
-
-    const smallestFeeDecimals = sourceToken.decimals - 5
-    const smallestFee = BigNumber.from(10 ** smallestFeeDecimals)
-    let feeAmount: string
-    if (lpFees.gt('0') && lpFees.lt(smallestFee)) {
-      feeAmount = `<${formatUnits(smallestFee, sourceToken.decimals)}`
-    } else {
-      feeAmount = commafy(formatUnits(lpFees, sourceToken.decimals), 5)
-    }
-
-    setFeeDisplay(`${feeAmount} ${sourceToken.symbol}`)
-  }, [lpFees])
 
   useEffect(() => {
     if (!amountOutMin || !destToken) {
@@ -523,6 +414,13 @@ const Send: FC = () => {
     }
   }, [tx])
 
+  const { gnosisEnabled, gnosisSafeWarning, isCorrectSignerNetwork } = useGnosisSafeTransaction(
+    tx,
+    customRecipient,
+    fromNetwork,
+    toNetwork
+  )
+
   // ==============================================================================================
   // User actions
   // - Bridge / Network selection
@@ -563,7 +461,7 @@ const Send: FC = () => {
 
   // Change the fromNetwork
   const handleFromNetworkChange = (network: Network | undefined) => {
-    if (network === toNetwork) {
+    if (network?.slug === toNetwork?.slug) {
       handleSwitchDirection()
     } else {
       setFromNetwork(network)
@@ -572,7 +470,7 @@ const Send: FC = () => {
 
   // Change the toNetwork
   const handleToNetworkChange = (network: Network | undefined) => {
-    if (network === fromNetwork) {
+    if (network?.slug === fromNetwork?.slug) {
       handleSwitchDirection()
     } else {
       setToNetwork(network)
@@ -584,6 +482,28 @@ const Send: FC = () => {
     const value = event.target.value.trim()
     setCustomRecipient(value)
   }
+
+  useEffect(() => {
+    if (
+      toNetwork?.slug === ChainSlug.Arbitrum &&
+      customRecipient &&
+      !address?.eq(customRecipient)
+    ) {
+      return setManualWarning(
+        'Warning: transfers to exchanges that do not support internal transactions may result in lost funds.'
+      )
+    }
+    setManualWarning('')
+  }, [fromNetwork?.slug, toNetwork?.slug, customRecipient, address])
+
+  useEffect(() => {
+    // if (fromNetwork?.slug === ChainSlug.Polygon || toNetwork?.slug === ChainSlug.Polygon) {
+    //   return setManualError('Warning: transfers to/from Polygon are temporarily down.')
+    // }
+    // setManualError('')
+  }, [fromNetwork?.slug, toNetwork?.slug])
+
+  const { disabledTx } = useDisableTxs(fromNetwork, toNetwork)
 
   const approveButtonActive = !needsTokenForFee && !unsupportedAsset && needsApproval
 
@@ -597,9 +517,12 @@ const Send: FC = () => {
       fromTokenAmount &&
       toTokenAmount &&
       rate &&
-      enoughBalance &&
+      sufficientBalance &&
       isLiquidityAvailable &&
-      estimatedReceived?.gt(0)
+      estimatedReceived?.gt(0) &&
+      !manualError &&
+      (!disabledTx || disabledTx.warningOnly) &&
+      (gnosisEnabled ? isCorrectSignerNetwork : !isSmartContractWallet)
     )
   }, [
     needsApproval,
@@ -610,9 +533,14 @@ const Send: FC = () => {
     fromTokenAmount,
     toTokenAmount,
     rate,
-    enoughBalance,
+    sufficientBalance,
     isLiquidityAvailable,
-    estimatedReceived
+    estimatedReceived,
+    manualError,
+    disabledTx,
+    gnosisEnabled,
+    isCorrectSignerNetwork,
+    isSmartContractWallet,
   ])
 
   return (
@@ -670,7 +598,23 @@ const Send: FC = () => {
         styles={styles}
         customRecipient={customRecipient}
         handleCustomRecipientInput={handleCustomRecipientInput}
+        isOpen={isSmartContractWallet}
       />
+
+      <div className={styles.smartContractWalletWarning}>
+        <Alert severity={gnosisSafeWarning.severity}>{gnosisSafeWarning.text}</Alert>
+      </div>
+
+      {disabledTx && (
+        <Alert severity={disabledTx.warningOnly ? 'warning' : 'error'}>
+          <ExternalLink
+            href={disabledTx.message?.href}
+            text={disabledTx.message?.text}
+            linkText={disabledTx.message?.linkText}
+            postText={disabledTx.message?.postText}
+          />
+        </Alert>
+      )}
 
       <div className={styles.details}>
         <div className={styles.destinationTxFeeAndAmount}>
@@ -700,7 +644,10 @@ const Send: FC = () => {
         </div>
       </div>
 
+      <Alert severity="error" onClose={() => setError(null)} text={error} />
       {!error && <Alert severity="warning">{warning}</Alert>}
+      <Alert severity="warning">{manualWarning}</Alert>
+      <Alert severity="error">{manualError}</Alert>
 
       <ButtonsWrapper>
         {!sendButtonActive && (
@@ -736,7 +683,7 @@ const Send: FC = () => {
 
       <Flex mt={1}>
         <Alert severity="info" onClose={() => setInfo(null)} text={info} />
-        {tx && <TxStatusModal onClose={() => setTx(null)} tx={tx} />}
+        {tx && <TxStatusModal onClose={() => setTx(undefined)} tx={tx} />}
       </Flex>
     </Flex>
   )

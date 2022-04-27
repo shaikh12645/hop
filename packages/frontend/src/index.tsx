@@ -5,8 +5,10 @@ import { QueryClient, QueryClientProvider } from 'react-query'
 import App from './App'
 import reportWebVitals from './reportWebVitals'
 import ThemeProvider from './theme/ThemeProvider'
-import Web3Context from './contexts/Web3Context'
-import AppContext from './contexts/AppContext'
+import Web3Provider from './contexts/Web3Context'
+import AppProvider from './contexts/AppContext'
+import SafeProvider from '@gnosis.pm/safe-apps-react-sdk'
+import { ReactQueryDevtools } from 'react-query/devtools'
 
 const isIPFS = !!process.env.REACT_APP_IPFS_BUILD
 const Router: ComponentType = isIPFS ? HashRouter : BrowserRouter
@@ -14,24 +16,34 @@ const Router: ComponentType = isIPFS ? HashRouter : BrowserRouter
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 15000,
+      staleTime: 20000,
       cacheTime: 1000 * 60 * 60,
+      // By default, retries in React Query do not happen immediately after a request fails.
+      // As is standard, a back-off delay is gradually applied to each retry attempt.
+      // The default retryDelay is set to double (starting at 1000ms) with each attempt, but not exceed 30 seconds:
+      retryDelay: attemptIndex => Math.min(1000 * 2 ** attemptIndex, 30000),
+      onError: err => {
+        console.log(`react-query error:`, err)
+      },
     },
   },
 })
 
 ReactDOM.render(
-  <ThemeProvider>
-    <Router>
-      <Web3Context>
-        <AppContext>
-          <QueryClientProvider client={queryClient}>
-            <App />
-          </QueryClientProvider>
-        </AppContext>
-      </Web3Context>
-    </Router>
-  </ThemeProvider>,
+  <SafeProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <Router>
+          <Web3Provider>
+            <AppProvider>
+              <App />
+              <ReactQueryDevtools />
+            </AppProvider>
+          </Web3Provider>
+        </Router>
+      </QueryClientProvider>
+    </ThemeProvider>
+  </SafeProvider>,
   document.getElementById('root')
 )
 

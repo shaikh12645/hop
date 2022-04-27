@@ -9,7 +9,7 @@ import { EventEmitter } from 'events'
 import { Transaction } from 'src/types'
 import { config as globalConfig } from 'src/config'
 
-type TxOverrides = PayableOverrides & {from?: string, value?: BigNumberish}
+export type TxOverrides = PayableOverrides & {from?: string, value?: BigNumberish}
 
 export default class ContractBase extends EventEmitter {
   contract: Contract
@@ -27,7 +27,7 @@ export default class ContractBase extends EventEmitter {
       throw new Error('chain slug not found for contract provider')
     }
     this.chainSlug = chainSlug
-    this.chainId = chainSlugToId(chainSlug)! // eslint-disable-line
+    this.chainId = chainSlugToId(chainSlug)
   }
 
   getChainId = async (): Promise<number> => {

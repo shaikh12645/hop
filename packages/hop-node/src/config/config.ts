@@ -26,6 +26,7 @@ export const slackAuthToken = process.env.SLACK_AUTH_TOKEN
 export const slackUsername = process.env.SLACK_USERNAME ?? 'Hop Node'
 export const gasBoostWarnSlackChannel = process.env.GAS_BOOST_WARN_SLACK_CHANNEL // optional
 export const gasBoostErrorSlackChannel = process.env.GAS_BOOST_ERROR_SLACK_CHANNEL // optional
+export const healthCheckerWarnSlackChannel = process.env.HEALTH_CHECKER_WARN_SLACK_CHANNEL // optional
 export const gasPriceMultiplier = normalizeEnvVarNumber(process.env.GAS_PRICE_MULTIPLIER)
 export const minPriorityFeePerGas = normalizeEnvVarNumber(process.env.MIN_PRIORITY_FEE_PER_GAS)
 export const priorityFeePerGasCap = normalizeEnvVarNumber(process.env.PRIORITY_FEE_PER_GAS_CAP)
@@ -41,7 +42,7 @@ const envNetwork = process.env.NETWORK ?? Network.Kovan
 const isTestMode = !!process.env.TEST_MODE
 const bonderPrivateKey = process.env.BONDER_PRIVATE_KEY
 
-export const oruChains: string[] = [Chain.Optimism, Chain.Arbitrum]
+export const oruChains: Set<string> = new Set([Chain.Optimism, Chain.Arbitrum])
 export const rateLimitMaxRetries = 5
 export const rpcTimeoutSeconds = 90
 export const defaultConfigDir = `${os.homedir()}/.hop-node`
@@ -85,7 +86,6 @@ export type Config = {
   bonderPrivateKey: string
   metadata: Metadata & {[network: string]: any}
   bonders: Bonders
-  stateUpdateAddress: string
   db: DbConfig
   sync: SyncConfigs
   metrics: MetricsConfig
@@ -136,7 +136,6 @@ export const config: Config = {
   bonderPrivateKey: bonderPrivateKey ?? '',
   metadata,
   bonders: {},
-  stateUpdateAddress: '',
   fees: {},
   routes: {},
   db: {
@@ -157,7 +156,7 @@ export const config: Config = {
     },
     [Chain.Polygon]: {
       totalBlocks: TotalBlocks.Polygon,
-      batchBlocks: 1000
+      batchBlocks: DefaultBatchBlocks
     },
     [Chain.Gnosis]: {
       totalBlocks: TotalBlocks.Gnosis,
@@ -220,10 +219,6 @@ export const setNetworkMaxGasPrice = (network: string, maxGasPrice: number) => {
 
 export const getNetworkMaxGasPrice = (network: string) => {
   return config.networks[network].maxGasPrice
-}
-
-export const setStateUpdateAddress = (address: string) => {
-  config.stateUpdateAddress = address
 }
 
 export const setSyncConfig = (syncConfigs: SyncConfigs = {}) => {

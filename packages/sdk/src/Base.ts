@@ -1,13 +1,37 @@
 import fetch from 'isomorphic-fetch'
 import memoize from 'fast-memoize'
 import { Addresses } from '@hop-protocol/core/addresses'
-import { BigNumber, BigNumberish, Contract, Signer, constants, providers } from 'ethers'
+import { ArbERC20 } from '@hop-protocol/core/contracts/ArbERC20'
+import { ArbERC20__factory } from '@hop-protocol/core/contracts/factories/ArbERC20__factory'
+import { ArbitrumGlobalInbox } from '@hop-protocol/core/contracts/ArbitrumGlobalInbox'
+import { ArbitrumGlobalInbox__factory } from '@hop-protocol/core/contracts/factories/ArbitrumGlobalInbox__factory'
+import { BigNumber, BigNumberish, Signer, constants, providers } from 'ethers'
 import { Chain, Token as TokenModel } from './models'
-import { ChainSlug, Errors, MinPolygonGasPrice, NetworkSlug } from './constants'
+import { ChainSlug, Errors, MinPolygonGasLimit, MinPolygonGasPrice, NetworkSlug } from './constants'
+import { L1OptimismTokenBridge } from '@hop-protocol/core/contracts/L1OptimismTokenBridge'
+import { L1OptimismTokenBridge__factory } from '@hop-protocol/core/contracts/factories/L1OptimismTokenBridge__factory'
+import { L1PolygonPosRootChainManager } from '@hop-protocol/core/contracts/L1PolygonPosRootChainManager'
+import { L1PolygonPosRootChainManager__factory } from '@hop-protocol/core/contracts/factories/L1PolygonPosRootChainManager__factory'
+import { L1XDaiForeignOmniBridge } from '@hop-protocol/core/contracts/L1XDaiForeignOmniBridge'
+import { L1XDaiForeignOmniBridge__factory } from '@hop-protocol/core/contracts/factories/L1XDaiForeignOmniBridge__factory'
+import { L2OptimismTokenBridge } from '@hop-protocol/core/contracts/L2OptimismTokenBridge'
+import { L2OptimismTokenBridge__factory } from '@hop-protocol/core/contracts/factories/L2OptimismTokenBridge__factory'
+import { L2PolygonChildERC20 } from '@hop-protocol/core/contracts/L2PolygonChildERC20'
+import { L2PolygonChildERC20__factory } from '@hop-protocol/core/contracts/factories/L2PolygonChildERC20__factory'
+import { L2XDaiToken } from '@hop-protocol/core/contracts/L2XDaiToken'
+import { L2XDaiToken__factory } from '@hop-protocol/core/contracts/factories/L2XDaiToken__factory'
 import { TChain, TProvider, TToken } from './types'
 import { config, metadata } from './config'
 import { getContractFactory, predeploys } from '@eth-optimism/contracts'
 import { parseEther, serializeTransaction } from 'ethers/lib/utils'
+
+export type L1Factory = L1PolygonPosRootChainManager__factory | L1XDaiForeignOmniBridge__factory | ArbitrumGlobalInbox__factory | L1OptimismTokenBridge__factory
+export type L1Contract = L1PolygonPosRootChainManager | L1XDaiForeignOmniBridge | ArbitrumGlobalInbox | L1OptimismTokenBridge
+
+export type L2Factory = L2PolygonChildERC20__factory | L2XDaiToken__factory | ArbERC20__factory | L2OptimismTokenBridge__factory
+export type L2Contract = L2PolygonChildERC20 | L2XDaiToken | ArbERC20 | L2OptimismTokenBridge
+
+type Factory = L1Factory | L2Factory
 
 export type ChainProviders = { [slug in ChainSlug | string]: providers.Provider }
 
@@ -30,14 +54,14 @@ const getProvider = memoize((network: string, chain: string) => {
 
 const getContractMemo = memoize(
   (
+    factory,
     address: string,
-    abi: any[],
     cacheKey: string
-  ): ((provider: TProvider) => Contract) => {
-    let cached: any
+  ): ((provider: TProvider) => L1Contract | L2Contract) => {
+    let cached: L1Contract | L2Contract
     return (provider: TProvider) => {
       if (!cached) {
-        cached = new Contract(address, abi, provider)
+        cached = factory.connect(address, provider)
       }
       return cached
     }
@@ -46,10 +70,10 @@ const getContractMemo = memoize(
 
 // cache contract
 const getContract = async (
+  factory: Factory,
   address: string,
-  abi: any[],
   provider: TProvider
-): Promise<Contract> => {
+): Promise<any> => {
   const p = provider as any
   // memoize function doesn't handle dynamic provider object well, so
   // here we derived a cache key based on connected account address and rpc url.
@@ -59,7 +83,7 @@ const getContract = async (
   const fallbackProviderChainId = p?._network?.chainId ?? ''
   const rpcUrl = p?.connection?.url ?? ''
   const cacheKey = `${signerAddress}${chainId}${fallbackProviderChainId}${rpcUrl}`
-  return getContractMemo(address, abi, cacheKey)(provider)
+  return getContractMemo(factory, address, cacheKey)(provider)
 }
 
 /**
@@ -136,6 +160,11 @@ class Base {
     } catch (err) {
       console.error(err)
     }
+  }
+
+  sendTransaction (transactionRequest: providers.TransactionRequest, chain: TChain) {
+    const chainId = this.toChainModel(chain).chainId
+    return this.signer.sendTransaction({ ...transactionRequest, chainId } as any)
   }
 
   setConfigAddresses (addresses: Addresses) {
@@ -466,6 +495,7 @@ class Base {
       if (txOptions.gasPrice?.lt(MinPolygonGasPrice)) {
         txOptions.gasPrice = BigNumber.from(MinPolygonGasPrice)
       }
+      txOptions.gasLimit = MinPolygonGasLimit
     }
 
     return txOptions
@@ -520,6 +550,7 @@ class Base {
 
   getSupportedAssets () {
     const supported : any = {}
+
     for (const token in this.addresses) {
       for (const chain in this.addresses[token]) {
         if (!supported[chain]) {
