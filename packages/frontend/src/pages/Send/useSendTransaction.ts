@@ -50,6 +50,7 @@ export function useSendTransaction(props) {
   } = props
   const [tx, setTx] = useState<Transaction>()
   const [sending, setSending] = useState<boolean>(false)
+  const [isGnosisSafeWallet, setIsGnosisSafeWallet] = useState<boolean>(false)
   const { provider, address, checkConnectedNetworkId, walletName } = useWeb3Context()
   const [recipient, setRecipient] = useState<string>()
   const [signer, setSigner] = useState<Signer>()
@@ -201,6 +202,7 @@ export function useSendTransaction(props) {
       kind: 'send',
       inputProps: {
         customRecipient,
+        isGnosisSafeWallet,
         source: {
           amount: fromTokenAmount,
           token: sourceToken,
@@ -218,10 +220,11 @@ export function useSendTransaction(props) {
         const isNetworkConnected = await checkConnectedNetworkId(networkId)
         if (!isNetworkConnected) return
 
+        const relayerFeeWithId = getBonderFeeWithId(totalFee)
+
         return bridge.send(parsedAmount, sdk.Chain.Ethereum, toNetwork?.slug, {
           deadline: deadline(),
-          relayer: constants.AddressZero,
-          relayerFee: 0,
+          relayerFee: relayerFeeWithId,
           recipient,
           amountOutMin,
         })
@@ -236,6 +239,7 @@ export function useSendTransaction(props) {
       kind: 'send',
       inputProps: {
         customRecipient,
+        isGnosisSafeWallet,
         source: {
           amount: fromTokenAmount,
           token: sourceToken,
@@ -277,6 +281,7 @@ export function useSendTransaction(props) {
       kind: 'send',
       inputProps: {
         customRecipient,
+        isGnosisSafeWallet,
         source: {
           amount: fromTokenAmount,
           token: sourceToken,
@@ -318,5 +323,6 @@ export function useSendTransaction(props) {
     sending,
     tx,
     setTx,
+    setIsGnosisSafeWallet
   }
 }
